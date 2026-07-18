@@ -1,0 +1,16 @@
+{
+  "name": "nawill-app",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter @nawill/api start:dev",
+    "build": "pnpm --filter @nawill/api build",
+    "test": "pnpm --filter @nawill/api test",
+    "test:e2e": "pnpm --filter @nawill/api test:e2e"
+  },
+  "packageManager": "pnpm@9.15.9"
+}

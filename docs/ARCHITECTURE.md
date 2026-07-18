@@ -1,0 +1,642 @@
+# Nawill App — Architecture & Database Schema
+
+**Document version:** 1.0 · **Date:** 18 July 2026
+**Author:** Ushahemba Shir
+**Status:** Draft for review
+
+Companion docs: [PRD](./PRD.md) · [Technical Docs & Flow Diagrams](./TECHNICAL.md)
+
+---
+
+## 1. Tech Stack
+
+| Layer | Choice | Rationale |
+|---|---|---|
+| **Backend** | NestJS 10 (Node 20 LTS, TypeScript) — modular monolith | Stated; team expertise; module system maps 1:1 to the domain modules; SOLID, clear separation of concerns |
+| **Frontend** | Next.js 14+ (App Router, TypeScript) + Tailwind CSS | Stated (Next.js); SSR for public pages (blog/FAQ SEO), SPA feel for dashboard. Tailwind wasn't specified in the original brief — added as the pragmatic default for a scaffold (zero design-system decisions needed to get a working shell up). **This build is structure only** — see [§8](#8-frontend-architecture) |
+| **ORM** | Prisma (recommended) | Type-safe client, migrations, excellent DX in a TS monorepo; soft delete via client extension (`deletedAt` filter applied globally). Alternative: TypeORM if you prefer decorator entities/AR pattern — but Prisma's migration story and type safety win for a fresh codebase |
+| **Database** | PostgreSQL 16 | Stated |
+| **Cache / Queue** | Redis 7 + BullMQ | Cache, sessions, rate limits, background jobs (webhooks, emails, requery). **In this build**, Redis is wired up and live for one thing only — auth security (§7.7): login lockout counters, password-reset tokens, 2FA challenges/setup secrets. General response caching, session storage, and BullMQ job queues are still deferred (see [QA.md §7](./QA.md#7-known-gaps-explicitly-out-of-scope-for-this-pass)) |
+| **Monorepo** | Turborepo + pnpm workspaces | Lighter than Nx, first-class Next.js support, shared packages with remote caching |
+| **Auth** | JWT (access 15 m) + refresh (7 d); argon2id hashing; Redis-backed login lockout + password reset + 2FA (§7.7) | **This build:** refresh tokens are stateless (re-verified and re-signed, not stored/rotated in Redis) — see [QA.md §7](./QA.md#7-known-gaps-explicitly-out-of-scope-for-this-pass) |
+| **Validation** | `class-validator` / `class-transformer` (global `ValidationPipe`, whitelist) | |
+| **API Docs** | `@nestjs/swagger`, OpenAPI at `/api/docs` (open in dev/test, Basic-Auth gated in prod) | The `@nestjs/swagger` **CLI plugin** (`nest-cli.json`) generates most request/response schema from TS types + `class-validator` decorators automatically — controllers only add `@ApiTags`/`@ApiBearerAuth`, DTOs need no manual `@ApiProperty` boilerplate. Response *envelope* shape (`{success,message,data,meta}`) isn't individually schema'd per route (would mean `@ApiResponse` on ~40 handlers) — a documented DRY tradeoff, see [QA.md §7](./QA.md#7-known-gaps-explicitly-out-of-scope-for-this-pass) |
+| **Logging** | Pino (`nestjs-pino`) | |
+| **Health** | `@nestjs/terminus` | |
+| **Errors** | Sentry | Not wired up in this build — unhandled exceptions are still logged via Pino, just not shipped anywhere |
+| **Email** | Resend or Zoho SMTP (adapter pattern) | **This build:** no provider configured — password resets and 2FA codes go through an in-memory `DevMailboxService` instead (§7.7) |
+| **Files** | S3-compatible object storage; `sharp` for images | Not built in this pass — KYC documents are metadata-only records (§7.3 note) |
+| **Testing** | Jest (unit) + Supertest (e2e) against a real local Postgres + Redis (created/flushed per run) | See [QA.md](./QA.md) for the full disposable-DB/Redis strategy — Testcontainers noted there as the eventual CI-portable option |
+| **Deployment** | Docker (multi-stage `apps/api/Dockerfile`) + `docker-compose.yml` (api + postgres + redis) at the repo root, modeled on the working pattern in the `spending-advisor` project | `docker compose up` gives a self-contained stack (migrate → seed → serve, see the Dockerfile `CMD`); local dev still runs against directly-installed Postgres/Redis, not compose — see [§9](#9-environment-setup-dev--prod) |
+| **CI/CD** | GitHub Actions → build, test, migrate, deploy to SoftKloud (dev on merge to `develop`, prod on release tag) | Not set up in this build — the Dockerfile is deploy-target-agnostic (SoftKloud, Render, Fly, etc. can all run the same image) |
+| **UI hosting** | Vercel (initial) | Stated |
+
+---
+
+## 2. Monorepo Layout
+
+```
+nawill-app/
+├── apps/
+│   ├── api/                 # NestJS
+│   │   ├── Dockerfile       # multi-stage: deps -> build -> runtime
+│   │   └── .dockerignore
+│   └── web/                 # Next.js — client dashboard scaffold (§8); no /admin surface built
+├── packages/                # not created yet — nothing to share between one API and one
+│                             # structural-scaffold web app; see §8 for what "later" looks like
+├── docs/
+│   ├── PRD.md
+│   ├── ARCHITECTURE.md
+│   ├── TECHNICAL.md
+│   ├── QA.md
+│   └── postman/
+├── docker-compose.yml        # api + postgres + redis, for deployment/full-stack spin-up
+├── .dockerignore
+├── Makefile                  # make dev-api / dev-web / test / migrate / seed / docker-up / ...
+├── turbo.json
+├── pnpm-workspace.yaml
+└── .github/workflows/       # ci.yml, deploy-dev.yml, deploy-prod.yml
+```
+
+## 3. Module Boundaries (Modular Monolith)
+
+Each NestJS module owns its tables, exposes a public service interface, and never reaches into another module's repository directly — cross-module calls go through the exporting module's service (or emit domain events). This is what makes later extraction to microservices cheap.
+
+```
+apps/api/src/modules/
+  ├── auth/               # signup, login, JWT, refresh, password reset, 2FA
+  ├── users/              # profiles, KYC, organizations
+  ├── rbac/               # roles, permissions, guards, decorators
+  ├── countries/          # countries + administrative-division hierarchy (§7.9)
+  ├── projects/           # projects, changes, status requests
+  ├── invoices/           # invoices + items, numbering, PDF generation, pay-with-wallet
+  ├── payments/           # initiate, webhooks, reconciliation, requery, processors
+  ├── wallets/            # wallet balance, ledger, funding (via payments), wallet debits
+  ├── bank-accounts/      # payout-eligible bank accounts, Paystack-verified (§7.8)
+  ├── external-services/  # every outbound third-party call lives here (§7.8)
+  ├── analytics/          # customer-facing overview aggregation (+ admin analytics reads)
+  ├── support/            # tickets, messages, ticket types
+  ├── notifications/      # dev mailbox now; real email/SMS/WhatsApp adapter later
+  ├── redis/              # RedisService (ioredis), global module
+  ├── prisma/             # PrismaService, global module
+  └── health/             # terminus health indicators
+common/                   # interceptors, filters, guards, decorators, pagination, DRY access-control util
+```
+
+No `admin/`, `services/` (catalogue endpoints), `files/`, `blog/`, or `reviews/` module exists yet — the service catalogue is seeded data queried directly where needed (invoices, projects) rather than its own CRUD module, and the rest are Phase 2 per [PRD §4.2](./PRD.md#42-phase-2). `referrals/` similarly has no module — the schema in §7.6 is migrated, but referrals are Phase 3 with no service or route in this build.
+
+## 4. Engineering Conventions
+
+- SOLID + dependency injection everywhere; controllers thin, services own logic, repositories own data.
+- Soft delete globally (Prisma extension) — hard deletes only via admin data-retention jobs.
+- All money in minor units (`BIGINT`) — no floats, ever.
+- Conventional commits; PR reviews; `develop` → dev env, tags → prod.
+- **Casing:** camelCase for fields/variables/functions, PascalCase for classes/types — never snake_case in application code. The one deliberate exception is existing Prisma **enum values** (`pre_project`, `wallet_funding`, `in_progress`, …) — left as-is on request, to avoid a migration plus edits across ~20 files and every doc for a cosmetic rename of already-shipped, tested enums. New enum-like fields (e.g. `AdministrativeDivision.type`, service pillar/billing seed keys) use camelCase/PascalCase values from the start. DB-level identifiers (table names via `@@map`, column names) stay `snake_case`/lowercase per normal Postgres convention — that's a SQL-layer convention, not "code."
+- **DRY, deliberately enforced, not just aspirational:** `UpdateProjectDto extends PartialType(CreateProjectDto)` rather than hand-duplicating optional fields (`@nestjs/mapped-types`); `assertOrgAccess()`/`assertSelfOrStaff()` in `common/auth/access.util.ts` replace what were four near-identical private methods across services; `@IdempotencyKey()` param decorator replaces a `requireIdempotencyKey()` helper that was copy-pasted into two controllers; `SAFE_USER_SELECT` lives in one file (`modules/users/user.select.ts`) instead of two; `paginatedFrom()` collapses the "unpack `{items,nextCursor}`, rebuild the envelope" boilerplate that was repeated in every list endpoint.
+- Seeds are idempotent by construction — every seed function upserts by a natural unique key (country `iso2`, service `name`, role `name`, division `(countryId, parentId, name)`, admin `email`, …), so `prisma db seed` can run on every deploy, not just once. See [§7.9](#79-country--administrative-division-hierarchy) for the country/division loader specifically, and [QA.md §3](./QA.md#3-disposable-database--test-and-erase) for how tests verify this.
+
+## 5. Capacity Estimation
+
+### 5.1 Assumptions
+
+| Parameter | Value | Basis |
+|---|---|---|
+| Daily Active Users (DAU) | < 100 now; plan for 1,000 (10× headroom) | Stated requirement |
+| Requests per active user/day | ~50 (dashboard loads, project views, invoice checks) | Typical B2B dashboard usage |
+| Read : Write ratio | ~80 : 20 | Dashboard-heavy workload |
+| Avg API payload (response) | ~5 KB (JSON) | Paginated lists of 20 items |
+| Avg uploaded file | Avatar ~200 KB, KYC doc ~2 MB, ticket attachment ~1 MB | Post-compression |
+
+### 5.2 Traffic
+
+```
+Current:  100 DAU × 50 req/day = 5,000 req/day
+          ≈ 0.06 RPS average
+          Peak (assume 10× avg, business hours): ~0.6–1 RPS
+
+10× growth (1,000 DAU): 50,000 req/day ≈ 0.6 RPS avg, ~6–10 RPS peak
+```
+
+**Conclusion:** even at 10× growth, a single modest app instance (1–2 vCPU, 2–4 GB RAM) handles this comfortably. The bottleneck will never be raw traffic at this stage — it will be third-party payment latency and operational reliability.
+
+### 5.3 Bandwidth / Storage
+
+```
+API traffic:   ~750 MB/month (current) → ~7.5 GB/month (10×)
+File traffic:  ~600 MB/month uploads + ~1.2 GB/month downloads
+Total network: < 3 GB/month now, < 15 GB/month at 10×
+
+Relational data: well under 1 GB/year including indexes and audit logs
+Files:           ~0.5 GB avatars/KYC year one; ticket attachments ≈ 1 GB/year
+                 → plan 5–10 GB object storage year one, grows linearly
+Redis:           256 MB is generous (sessions + cache + rate-limit counters)
+```
+
+Any VPS/cloud plan covers this; no CDN required for the API. Static frontend served from Vercel's CDN (already included).
+
+## 6. Scalability & Extensibility Path
+
+| Stage | Trigger | Change |
+|---|---|---|
+| Now (≤1k DAU) | — | 1 app instance + worker, 1 Postgres, 1 Redis |
+| Stage 2 | CPU > 70% sustained | Run 2+ stateless API instances behind Nginx LB (nothing in code changes — sessions are in Redis) |
+| Stage 3 | Heavy reads | Postgres read replica; route analytics queries to it |
+| Stage 4 | A module dominates load | Extract that module (e.g. payments) to its own service — boundaries already clean |
+
+---
+
+## 7. Database Schema
+
+### 7.1 Global Column Contract
+
+Every table includes:
+
+| Column | Type | Default | Notes |
+|---|---|---|---|
+| `id` | UUID (v7 recommended) | generated | Primary key |
+| `status` | BOOLEAN | `true` | Active flag (domain-specific status columns are separate enums) |
+| `createdAt` | TIMESTAMPTZ | `now()` | |
+| `updatedAt` | TIMESTAMPTZ | auto-updated | |
+| `deletedAt` | TIMESTAMPTZ | `NULL` | Soft delete — all queries filter `deletedAt IS NULL` by default |
+
+> Because `status` is a boolean on every table, lifecycle states (e.g. invoice paid/pending) use their own explicitly named enum columns (`invoiceStatus`, `paymentStatus`, `ticketStatus`) to avoid collision.
+
+### 7.2 Entity Relationship Diagram
+
+```mermaid
+erDiagram
+    COUNTRIES ||--o{ USERS : "country of"
+    ORGANIZATIONS ||--o{ USERS : "has members"
+    ORGANIZATIONS ||--o{ KYC_DOCUMENTS : owns
+    USERS ||--o{ USER_ROLES : has
+    ROLES ||--o{ USER_ROLES : "assigned via"
+    ROLES ||--o{ ROLE_PERMISSIONS : bundles
+    PERMISSIONS ||--o{ ROLE_PERMISSIONS : "granted via"
+    USERS ||--o{ PROJECT_INQUIRIES : submits
+    PROJECT_INQUIRIES |o--o| PROJECTS : "converted to"
+    ORGANIZATIONS ||--o{ PROJECTS : owns
+    USERS ||--o{ PROJECTS : "manages (owner)"
+    SERVICES |o--o{ PROJECTS : "based on"
+    PROJECTS ||--o{ PROJECT_MILESTONES : "delivered via"
+    PROJECTS ||--o{ PROJECT_CHANGES : history
+    PROJECTS ||--o{ PROJECT_STATUS_REQUESTS : has
+    ORGANIZATIONS ||--o{ INVOICES : "billed for"
+    PROJECTS |o--o{ INVOICES : references
+    INVOICES ||--o{ INVOICE_ITEMS : contains
+    SERVICES |o--o{ INVOICE_ITEMS : references
+    INVOICES |o--o{ PAYMENTS : "settled by (processor)"
+    PAYMENT_PROCESSORS ||--o{ PAYMENTS : via
+    PAYMENT_PROCESSORS ||--o{ PAYMENT_NOTIFICATIONS : webhooks
+    PAYMENTS |o--o{ PAYMENT_NOTIFICATIONS : matched
+    USERS ||--|| WALLETS : owns
+    WALLETS ||--o{ WALLET_TRANSACTIONS : ledger
+    PAYMENTS |o--o| WALLETS : "funds (wallet_funding)"
+    WALLET_TRANSACTIONS |o--o| INVOICES : "settles (wallet payment)"
+    USERS ||--o{ WALLET_TRANSACTIONS : initiates
+    USERS ||--o{ SUPPORT_TICKETS : raises
+    TICKET_TYPES ||--o{ SUPPORT_TICKETS : categorizes
+    SUPPORT_TICKETS ||--o{ TICKET_MESSAGES : contains
+    USERS ||--o{ TICKET_MESSAGES : sends
+    USERS ||--o{ FILES : uploads
+    USERS ||--o{ REVIEWS : writes
+    PROJECTS |o--o{ REVIEWS : "reviewed on"
+    SERVICES |o--o{ REVIEWS : "reviewed on"
+    USERS ||--o{ AUDIT_LOGS : "acted by"
+    USERS ||--o{ BLOG_POSTS : authors
+    USERS ||--o{ NOTIFICATIONS : "sent to"
+    USERS ||--o{ BANK_ACCOUNTS : owns
+    COUNTRIES ||--o{ ADMINISTRATIVE_DIVISIONS : contains
+    ADMINISTRATIVE_DIVISIONS ||--o{ ADMINISTRATIVE_DIVISIONS : "parent of"
+    USERS ||--o| REFERRAL_CODES : "owns (Phase 3)"
+    REFERRAL_CODES ||--o{ REFERRALS : generates
+    USERS ||--o{ REFERRALS : "refers / is referred (Phase 3)"
+    REFERRALS ||--o{ REFERRAL_COMMISSIONS : earns
+    INVOICES |o--o{ REFERRAL_COMMISSIONS : "computed from (Phase 3)"
+```
+
+### 7.3 Table Definitions
+
+*(Common columns from §7.1 omitted for brevity — they exist on every table.)*
+
+**users**
+
+| Column | Type | Notes |
+|---|---|---|
+| `name` | VARCHAR(120) | required |
+| `email` | CITEXT UNIQUE | required, verified flag below |
+| `passwordHash` | VARCHAR | argon2id |
+| `emailVerifiedAt` | TIMESTAMPTZ NULL | |
+| `userType` | ENUM(client,staff,admin) | default `client` |
+| `clientType` | ENUM(individual,corporate) NULL | mirrors website inquiry form; null for staff/admin |
+| `organizationId` | UUID FK → organizations NULL | null for staff/admin. **Implementation note:** individual clients also get an `Organization` row at signup (`sector="individual"`) rather than staying null as originally specified — `projects`/`invoices` require a non-null `organizationId`, and giving every client a consistent owner avoids a nullable-FK special case throughout those modules. The user-facing distinction between individual/corporate is still `clientType`, not the presence of an organization. |
+| `countryId` | UUID FK → countries NULL | nullable — `GET /countries` (§7.9) exists for a picker, but signup doesn't require selecting one yet; set later via profile update |
+| `phoneNo` | VARCHAR(20) | E.164 |
+| `avatarFileId` | UUID FK → files NULL | |
+| `lastLoginAt` | TIMESTAMPTZ NULL | |
+| `twoFactorMethod` | ENUM(none,email,totp) | default `none`; durable setting, changed via the account-security endpoints |
+| `twoFactorSecret` | VARCHAR NULL | TOTP secret only — set when `twoFactorMethod=totp`, null otherwise. Login-lockout counters, password-reset tokens, and 2FA login challenges are **not** columns here — they're Redis-only (§7.7) |
+
+**organizations**
+
+| Column | Type | Notes |
+|---|---|---|
+| `name` | VARCHAR(160) | |
+| `sector` | VARCHAR(80) | |
+| `rcNumber` | VARCHAR(40) UNIQUE NULL | CAC RC number |
+| `headOffice` | TEXT | address |
+| `sizeRange` | ENUM(1-10,11-50,51-200,200+) | |
+| `kycStatus` | ENUM(pending,submitted,approved,rejected) | default `pending` |
+
+**kyc_documents**
+`organizationId` FK | `docType` ENUM(cac_certificate,utility_bill,id_card,other) | `fileId` FK → files | `reviewStatus` ENUM(pending,approved,rejected) | `reviewedBy` FK → users NULL | `reviewNote` TEXT NULL
+
+**countries** (seeded — 250 countries/territories, see §7.9)
+
+| Column | Type | Notes |
+|---|---|---|
+| `name` | VARCHAR | common name, e.g. "Nigeria" |
+| `officialName` | VARCHAR NULL | e.g. "Federal Republic of Nigeria" |
+| `iso2` | CHAR(2) UNIQUE | |
+| `iso3` | CHAR(3) UNIQUE | |
+| `numericCode` | VARCHAR(3) NULL | ISO 3166-1 numeric |
+| `dialCode` | VARCHAR | e.g. "+234" |
+| `capital` | VARCHAR NULL | null only for the handful of entries with no administrative capital (Antarctica, some uninhabited/dependent territories) |
+| `timezone` | VARCHAR NULL | |
+| `region` / `subregion` | VARCHAR NULL | e.g. "Africa" / "Western Africa" |
+| `currencyCode` | CHAR(3) | ISO 4217 |
+| `currencyName` / `currencySymbol` | VARCHAR NULL | |
+
+Flag is **not** a column — `GET /countries` computes it from `iso2` via the Unicode regional-indicator trick (`common/util/flag-emoji.ts`) at read time, so there's nothing to keep in sync.
+
+**administrative_divisions** — see §7.9 for the full design; columns: `countryId` FK, `parentId` FK → self NULL, `tier` INT, `type` VARCHAR (free text — "State", "LocalGovernmentArea", "Ward", ...), `name`, `capital` NULL, `code` NULL. `UNIQUE(countryId, parentId, name)`.
+
+**bank_accounts** — see §7.8. Columns: `userId` FK, `bankCode`, `bankName`, `accountNumber`, `accountName` (Paystack-verified), `currency` default `NGN`, `isVerified` BOOLEAN, `isDefault` BOOLEAN. `UNIQUE(userId, bankCode, accountNumber)`.
+
+**roles** — `name` VARCHAR(60) UNIQUE (super_admin, admin, project_manager, finance, support_agent, client), `description` TEXT
+
+**permissions** — `domain` VARCHAR(40) (users,projects,invoices,payments,support,blog,services,admin), `action` ENUM(read,write,update,delete), UNIQUE(domain, action)
+
+**role_permissions** — `roleId` FK, `permissionId` FK, UNIQUE(roleId, permissionId)
+
+**user_roles** — `userId` FK, `roleId` FK, `assignedBy` FK → users, UNIQUE(userId, roleId)
+
+**services** (catalogue — seeded, aligned to the three pillars on nawill.ng)
+
+| Column | Type | Notes |
+|---|---|---|
+| `name` | VARCHAR(120) UNIQUE | natural key the seed upserts on — see seed below |
+| `pillar` | ENUM(build,consult,talent,addon) | maps to the company's service pillars |
+| `type` | ENUM(core,custom,addon) | |
+| `billingModel` | ENUM(project,retainer,per_session,placement,recurring) | Build = project/retainer, Consult = per_session, Talent = placement, hosting/maintenance = recurring |
+| `description` | TEXT | |
+| `basePriceMinor` | BIGINT NULL | optional list price, minor units |
+| `currency` | CHAR(3) NULL | NGN or USD |
+
+Seed: Build — Website, Web App, Mobile App, API/Backend; Consult — Product Validation Session, Tech Stack Advisory; Talent — Developer Placement, Team Assembly; Add-ons — Web Hosting, Domain, Site Maintenance, API Integration.
+
+**projects**
+
+| Column | Type | Notes |
+|---|---|---|
+| `name` | VARCHAR(160) | |
+| `description` | TEXT | |
+| `organizationId` | UUID FK → organizations | client owner |
+| `ownerId` | UUID FK → users | staff PM; defaults to admin if unassigned |
+| `serviceId` | UUID FK → services NULL | |
+| `inquiryId` | UUID FK → project_inquiries NULL | provenance if converted from a lead |
+| `engagementModel` | ENUM(project_based,retainer) | mirrors Build pillar's commercial models |
+| `proposalFileId` | UUID FK → files NULL | the accepted proposal (scope, timeline, pricing) |
+| `phase` | ENUM(pre_project,ongoing,post_project,maintenance) | default `pre_project` |
+| `startDate` / `dueDate` / `completedAt` | DATE / DATE / TIMESTAMPTZ NULL | |
+
+**project_inquiries** (leads — fed by the website "Start a Project" form and in-app)
+
+| Column | Type | Notes |
+|---|---|---|
+| `fullName` / `email` / `phone` | VARCHAR / CITEXT / VARCHAR | prospect may not be a user yet |
+| `clientType` | ENUM(individual,corporate) | |
+| `projectType` | ENUM(website,web_app,mobile_app,api_backend,other) | matches website form |
+| `timeline` | ENUM(lt_1m,1_3m,3_6m,6m_plus,not_sure) | |
+| `budgetCurrency` | CHAR(3) NULL | NGN or USD |
+| `budgetRange` | VARCHAR(40) NULL | |
+| `description` | TEXT | |
+| `preferredContact` | ENUM(whatsapp,email) | |
+| `leadStatus` | ENUM(new,contacted,proposal_sent,won,lost) | default `new` |
+| `convertedUserId` / `convertedProjectId` | UUID FK NULL | set on conversion |
+| `assignedTo` | UUID FK → users NULL | staff owner |
+
+**project_milestones** ("you stay in the loop at every milestone")
+`projectId` FK | `title` VARCHAR(160) | `description` TEXT NULL | `sortOrder` INT | `dueDate` DATE NULL | `milestoneStatus` ENUM(pending,in_progress,delivered,accepted) | `deliveredAt` / `acceptedAt` TIMESTAMPTZ NULL
+
+**project_changes** (append-only history)
+`projectId` FK | `title` VARCHAR(160) | `detail` TEXT | `changedBy` FK → users | `changeType` ENUM(update,phase_change,scope_change,note)
+
+**project_status_requests** (client "request status" feature)
+`projectId` FK | `requestedBy` FK → users | `message` TEXT NULL | `requestStatus` ENUM(open,answered) | `answeredBy` FK NULL | `answer` TEXT NULL
+
+**invoices**
+
+| Column | Type | Notes |
+|---|---|---|
+| `invoiceNo` | VARCHAR(30) UNIQUE | e.g. `NAW-2026-0001`, sequential |
+| `organizationId` | UUID FK | |
+| `projectId` | UUID FK NULL | |
+| `issuedBy` | UUID FK → users | staff |
+| `currency` | CHAR(3) | NGN or USD (single currency per invoice; matches website budget options) |
+| `subtotalMinor` / `taxMinor` / `totalMinor` | BIGINT | computed from items; minor units (kobo / cents) |
+| `invoiceStatus` | ENUM(draft,pending,partially_paid,paid,cancelled,overdue) | default `draft` |
+| `dueDate` | DATE | |
+| `paidAt` | TIMESTAMPTZ NULL | |
+
+**invoice_items**
+`invoiceId` FK | `serviceId` FK NULL | `itemName` VARCHAR(160) | `quantity` INT | `unitAmountMinor` BIGINT | `actualAmountMinor` BIGINT (quantity × unit, after discounts)
+
+**payment_processors** (admin-onboarded)
+`name` VARCHAR(60) (paystack,flutterwave,interswitch,remita,**mock** — sandbox adapter used until live keys are onboarded, see [Technical doc §3.1](./TECHNICAL.md#31-payments--wallet-idempotency-webhooks-reconciliation-requery)) | `isDefault` BOOLEAN | `configEncrypted` JSONB (keys encrypted at rest) | `processorStatus` ENUM(active,disabled)
+
+**payments**
+
+`payments` is shared by two flows, distinguished by `purpose`: paying an invoice via a hosted processor link, or funding a wallet. Exactly one of `invoiceId` / `walletId` is set, matching `purpose`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `purpose` | ENUM(invoice_payment,wallet_funding) | drives which side effect reconciliation applies |
+| `invoiceId` | UUID FK NULL | set when `purpose=invoice_payment` |
+| `walletId` | UUID FK → wallets NULL | set when `purpose=wallet_funding` |
+| `initiatedBy` | UUID FK → users | |
+| `processorId` | UUID FK → payment_processors | |
+| `amountMinor` | BIGINT | |
+| `currency` | CHAR(3) | |
+| `idempotencyKey` | UUID UNIQUE | supplied by client on initiate |
+| `reference` | VARCHAR(60) UNIQUE | our internal reference |
+| `processorReference` | VARCHAR(120) NULL | processor's txn ref |
+| `paymentLink` | TEXT NULL | hosted checkout URL |
+| `paymentStatus` | ENUM(initiated,pending,successful,failed,reversed,abandoned) | |
+| `initiatedAt` | TIMESTAMPTZ | |
+| `reconciledAt` | TIMESTAMPTZ NULL | set only after webhook/requery verification |
+| `failureReason` | TEXT NULL | |
+
+**payment_notifications** (raw webhook inbox — append-only)
+`processorId` FK | `paymentId` FK NULL (matched later) | `eventType` VARCHAR(60) | `rawPayload` JSONB | `signatureValid` BOOLEAN | `processedAt` TIMESTAMPTZ NULL | `processingStatus` ENUM(received,processed,failed,ignored)
+
+**wallets** (one per client user)
+
+| Column | Type | Notes |
+|---|---|---|
+| `userId` | UUID FK → users UNIQUE | one wallet per client user (see §7.5 for the org-wallet rationale) |
+| `currency` | CHAR(3) | default `NGN` |
+| `balanceMinor` | BIGINT | default `0`; cached balance, always kept equal to `SUM(wallet_transactions)` for that wallet — recomputed and reconciled inside the same DB transaction as every ledger write, never updated independently |
+| `walletStatus` | ENUM(active,frozen) | default `active`; `frozen` blocks funding and spend, set by staff (e.g. suspected fraud) |
+
+**wallet_transactions** (append-only ledger — source of truth for balance)
+
+| Column | Type | Notes |
+|---|---|---|
+| `walletId` | UUID FK → wallets | |
+| `direction` | ENUM(credit,debit) | |
+| `source` | ENUM(funding,invoice_payment,refund,adjustment) | |
+| `amountMinor` | BIGINT | always positive; `direction` gives sign |
+| `balanceAfterMinor` | BIGINT | snapshot for audit/debugging |
+| `idempotencyKey` | UUID UNIQUE | prevents double-processing of the same funding/payment/adjustment |
+| `referencePaymentId` | UUID FK → payments NULL | set when `source=funding` |
+| `referenceInvoiceId` | UUID FK → invoices NULL | set when `source=invoice_payment` |
+| `description` | TEXT | |
+| `initiatedBy` | UUID FK → users | who triggered it (staff for `adjustment`, else the wallet owner or system) |
+| `txnStatus` | ENUM(pending,completed,failed,reversed) | default `completed`; ledger rows are only ever inserted, never mutated — a reversal is a new offsetting row referencing the original |
+
+**ticket_types** (seeded: Finance; Technical — domain; Billing — failed payment)
+`name` VARCHAR(60) UNIQUE | `description` TEXT NULL
+
+**support_tickets**
+`ticketNo` VARCHAR(30) UNIQUE | `ticketTypeId` FK | `raisedBy` FK → users | `assignedTo` FK → users NULL | `subject` VARCHAR(200) | `ticketStatus` ENUM(open,in_progress,awaiting_customer,resolved,closed) | `priority` ENUM(low,medium,high,urgent) | `resolvedAt` TIMESTAMPTZ NULL
+
+**ticket_messages**
+`ticketId` FK | `senderId` FK → users | `body` TEXT | `attachmentFileId` FK → files NULL | `isInternalNote` BOOLEAN default false
+
+**files**
+`uploadedBy` FK → users | `purpose` ENUM(avatar,kyc,ticket_attachment,invoice_pdf,blog_image,other) | `originalName` VARCHAR(255) | `mimeType` VARCHAR(100) | `sizeBytes` BIGINT | `storageKey` TEXT (object-storage path) | `checksum` VARCHAR(64)
+
+**blog_posts** (admin-only CRUD; seeded with FAQs)
+`title` VARCHAR(200) | `slug` VARCHAR(220) UNIQUE | `body` TEXT (markdown) | `category` ENUM(faq,article,documentation,reference) | `authorId` FK → users | `publishedAt` TIMESTAMPTZ NULL
+
+**reviews**
+`userId` FK | `projectId` FK NULL | `serviceId` FK NULL | `rating` SMALLINT (1–5) | `comment` TEXT | `reviewStatus` ENUM(pending,approved,hidden)
+
+**audit_logs** (non-repudiable change log — append-only, no updates/deletes)
+`domain` VARCHAR(40) | `entityId` UUID | `action` VARCHAR(60) | `changedBy` FK → users | `before` JSONB NULL | `after` JSONB NULL | `ipAddress` INET | `userAgent` TEXT | `requestId` VARCHAR(60)
+
+**notifications** (outbox)
+`userId` FK | `channel` ENUM(email,in_app) | `template` VARCHAR(60) | `payload` JSONB | `sentAt` TIMESTAMPTZ NULL | `sendStatus` ENUM(queued,sent,failed)
+
+### 7.4 Key Indexes
+
+- `users(email)`, `users(organizationId)`
+- `projects(organizationId)`, `projects(ownerId)`, `projects(phase)`
+- `invoices(organizationId, invoiceStatus)`, `invoices(invoiceNo)`
+- `payments(idempotencyKey)`, `payments(reference)`, `payments(processorReference)`, `payments(invoiceId)`
+- `payment_notifications(processorId, processingStatus)`
+- `wallets(userId)` (unique), `wallet_transactions(walletId, createdAt)`, `wallet_transactions(idempotencyKey)` (unique)
+- `support_tickets(raisedBy)`, `support_tickets(assignedTo, ticketStatus)`
+- `audit_logs(domain, entityId)`, `audit_logs(changedBy, createdAt)`
+- Partial indexes with `WHERE "deletedAt" IS NULL` on hot tables
+
+### 7.5 Wallet ↔ Payments Relationship
+
+- **Wallet is per-user, not per-organization.** Invoices/projects are org-scoped, but a wallet is a personal prepaid balance — it works identically for individual and corporate client users, and avoids the question of who within a corporate org is authorized to spend a shared pot. Any user may pay an org invoice from their own wallet (analogous to an employee expensing a company bill from a personal card); this is a deliberate MVP simplification. A shared org-level wallet with spend approval is a plausible Phase 3 addition if it turns out to matter.
+- **Funding reuses the existing payment machinery.** Rather than inventing a parallel "top-up" pipeline, wallet funding is just a `payments` row with `purpose=wallet_funding` and `walletId` set instead of `invoiceId`. It goes through the same idempotency key, webhook inbox, signature verification, and reconciliation-before-trust flow described in [Technical doc §3.1](./TECHNICAL.md#31-payments--wallet-idempotency-webhooks-reconciliation-requery) — the only difference is the side effect on success: credit the wallet and insert a `wallet_transactions` row instead of marking an invoice paid.
+- **Paying *from* the wallet is synchronous, not a payment.** `POST /invoices/:id/pay-with-wallet` never touches `payments` or a processor — it's a single DB transaction that locks the wallet row, checks `balanceMinor >= invoice.totalMinor`, inserts a `debit` / `invoice_payment` ledger row, decrements the cached balance, and marks the invoice `paid`. No webhook round-trip is possible or needed since both sides are internal.
+- **The ledger is the source of truth.** `wallets.balanceMinor` is a cache for fast reads; it is only ever written in the same transaction as the `wallet_transactions` row that justifies the change, so the two can never drift. Reconciliation jobs can always rebuild `balanceMinor` from `SUM(wallet_transactions.amountMinor)` if that invariant is ever suspect.
+
+### 7.6 Referral Program (schema only — Phase 3)
+
+Requested explicitly as something to design now without building it — see [PRD §4.3](./PRD.md#43-phase-3). Three tables, migrated but with no service/controller/route in this build pass:
+
+**referral_codes** — one per referring user
+
+| Column | Type | Notes |
+|---|---|---|
+| `userId` | UUID FK → users UNIQUE | the referrer |
+| `code` | VARCHAR UNIQUE | shareable code/link slug |
+
+**referrals** — one row per referred prospect
+
+| Column | Type | Notes |
+|---|---|---|
+| `referralCodeId` | UUID FK → referral_codes | which code was used |
+| `referrerUserId` | UUID FK → users | denormalized for fast "my referrals" queries |
+| `refereeEmail` | VARCHAR | prospect's email — may not be a user yet |
+| `refereeUserId` | UUID FK → users NULL | set once the prospect signs up |
+| `inquiryId` | UUID FK → project_inquiries UNIQUE NULL | links to the lead if one was submitted |
+| `convertedProjectId` | UUID FK → projects NULL | set on conversion |
+| `referralStatus` | ENUM(pending,signed_up,converted,expired) | default `pending` |
+| `convertedAt` | TIMESTAMPTZ NULL | |
+
+**referral_commissions** — one or more per converted referral (e.g. per invoice, if commission is charged on repeat billing)
+
+| Column | Type | Notes |
+|---|---|---|
+| `referralId` | UUID FK → referrals | |
+| `invoiceId` | UUID FK → invoices NULL | the invoice the commission is computed from |
+| `commissionType` | ENUM(percentage,fixed) | default `percentage` |
+| `commissionRate` | DECIMAL(5,2) NULL | e.g. `5.00` for 5% |
+| `commissionAmountMinor` | BIGINT | computed amount, minor units |
+| `commissionStatus` | ENUM(pending,approved,paid,rejected) | default `pending` — staff approval gate before payout |
+| `payoutMethod` | ENUM(wallet_credit,bank_transfer) | default `wallet_credit` — deliberately reuses the wallet ledger (§7.5) rather than inventing a second payout pipeline |
+| `paidAt` | TIMESTAMPTZ NULL | |
+
+Design intent for whenever this is built: a client refers a prospect with their code; the prospect either signs up directly or submits a project inquiry carrying the code; when staff convert that inquiry (or any inquiry tagged with a pending referral) into a paid project, `referralStatus → converted` and a `pending` commission is computed off the first invoice; staff approve it (`approved`); payout posts as an `adjustment`-sourced `wallet_transactions` credit to the referrer's wallet (or a manual bank transfer, tracked but not automated). No enforcement, computation, or payout logic exists yet — this section only fixes the shape so building it later doesn't require a migration that touches money tables retroactively.
+
+### 7.7 Redis-Backed Auth Security
+
+Requested explicitly: login lockout, password reset, and 2FA challenges should live in Redis, not as extra columns/tables on `users`. Everything here is a **value with a TTL**, never queried by anything other than the exact key — which is precisely what Redis is for and what Postgres is clumsy at (you'd need a cron to expire rows). Nothing in this section is queryable SQL state; it either resolves within its TTL or it's gone.
+
+| Key pattern | Value | TTL | Written by | Read by |
+|---|---|---|---|---|
+| `auth:fail:{email}` | failed-attempt counter (`INCR`) | 15 min, reset on each new failure streak | failed login | login (lockout check) |
+| `auth:lock:{email}` | `"1"` | 15 min | 5th consecutive failed login | login (checked before password verification) |
+| `auth:reset:{token}` | `userId` | 30 min | `POST /auth/forgot-password` | `POST /auth/reset-password` |
+| `auth:totp-setup:{userId}` | pending TOTP secret (base32) | 10 min | `POST /auth/2fa/totp/setup` | `POST /auth/2fa/totp/enable` |
+| `auth:email-2fa-setup:{userId}` | hashed confirmation code | 5 min | `POST /auth/2fa/email/request-code` | `POST /auth/2fa/email/enable` |
+| `auth:2fa-challenge:{challengeToken}` | JSON `{userId, method, otpHash?}` | 5 min | `POST /auth/login` (when 2FA is on) | `POST /auth/2fa/verify` |
+
+Notes:
+- **Lockout is checked before password verification** — a locked-out account gets `429 ACCOUNT_LOCKED` even with the correct password, which is the point (it stops both guessing *and* confirms-a-guess-was-right timing attacks).
+- **Login never returns tokens directly for a 2FA-enabled account.** It returns `{ requiresTwoFactor: true, method, challengeToken }`; tokens are only issued by `POST /auth/2fa/verify` once the second factor checks out. The challenge token is single-use — consumed (`DEL`) on success — and method-scoped: a `totp` challenge is verified against the user's persisted `twoFactorSecret` via `otplib`, an `email` challenge is verified against the challenge's own `otpHash`.
+- **Email OTPs are hashed at rest** (SHA-256) even in Redis — short TTL and a trusted internal store are defense in depth, not a reason to store codes in the clear.
+- **No email provider is wired up** (see tech stack table) — password-reset tokens and 2FA email codes are "sent" via an in-memory `DevMailboxService` (logged, and readable by tests the same way `MockPaymentProcessorAdapter` is) instead of Resend/SES/Zoho. Swapping in a real provider only touches that one service.
+- **`forgot-password` always returns the same generic message** regardless of whether the email exists, to avoid account enumeration.
+
+### 7.8 External Services & Paystack Account Verification
+
+Every outbound call to a third party lives under `modules/external-services/` — the `PaymentProcessorAdapter` interface + `MockPaymentProcessorAdapter` (moved here from `payments/adapters/`) and `PaystackAccountVerificationProvider`. This is a deliberate architectural boundary, not just a folder: it means "what does this app call over the network" is answerable by looking in one place, and it's where the next integration (SMS, WhatsApp, a real payment processor) goes by construction rather than by convention.
+
+**Why bank accounts exist at all:** `FR-29` — the system needs a place to send money *to* a client (refund, or eventually a referral commission payout per §7.6), not just receive it. `bank_accounts` records are opt-in, user-added, and must be verified before they're trustworthy.
+
+**Picking a bank (`GET /bank-accounts/banks`):** the client-side "add account" form needs a real bank list to populate a dropdown with, rather than asking a user to know their bank's Paystack code from memory. `PaystackAccountVerificationProvider.listBanks()` calls Paystack's `GET /bank?country=nigeria`.
+
+**Verification flow (`POST /bank-accounts`):**
+1. Client submits `bankCode` (from the dropdown above) + `accountNumber` (+ a display `bankName`).
+2. `PaystackAccountVerificationProvider.resolveAccount()` calls Paystack's `GET /bank/resolve` endpoint with the configured `PAYSTACK_SECRET_KEY`, which returns the account holder's registered name.
+3. The record is created with `isVerified=true` and the **Paystack-returned** `accountName` — never the client-supplied one, so a client can't claim an account isn't theirs.
+4. The first account a user adds becomes `isDefault` automatically; later ones aren't, until `PATCH /bank-accounts/:id/set-default`.
+
+**No live Paystack key in this environment.** Rather than a separate mock class (the pattern used for payments, where multiple real processors are expected eventually), `PaystackAccountVerificationProvider` is a single class with a config-gated branch on both its methods: no `PAYSTACK_SECRET_KEY` → `listBanks()` returns a hardcoded list of ~15 well-known Nigerian banks with their real Paystack codes, and `resolveAccount()` returns a deterministic `TEST ACCOUNT <last 4 digits>` result — neither calls the network. One real implementation, one place, same "sandbox by default" property as the payments side — see [QA.md §4](./QA.md#4-mock-payment-processor).
+
+### 7.9 Country & Administrative-Division Hierarchy
+
+Two tables: `countries` (flat, seeded from a 250-entry reference dataset — see §7.3) and `administrative_divisions` (self-referential tree, `tier` + `parentId`, arbitrary depth). Nigeria is seeded as `State` (tier 1) → `LocalGovernmentArea` (tier 2) → `Ward` (tier 3, modeled but not populated — see below), but nothing about the schema is Nigeria-specific: a country with `Province` → `District` → `Sector` tiers uses the exact same two tables.
+
+**Reading the hierarchy** (`GET /countries/:id/divisions` and `GET /divisions/:id/children`, both public — see [Technical doc](./TECHNICAL.md) endpoint map):
+- `?tier=1` on the divisions endpoint returns just the top level (states).
+- `?parentId=<stateId>` on the same endpoint, or the dedicated `GET /divisions/:stateId/children`, returns that state's LGAs — "pass a state id, get the local governments under it," per the original ask.
+- Omitting both filters returns every division for the country across all tiers, which is rarely what you want but is there for completeness.
+
+**Seeding is dynamic, not hardcoded to Nigeria.** `prisma/seed.ts` reads `prisma/seed-data/countries.json` (all 250 countries, upserted by `iso2`) and then auto-discovers every `prisma/seed-data/*-divisions.json` file via `readdirSync` — there is no `if country === 'Nigeria'` branch anywhere. Each divisions file declares its own tier→type mapping and a nested tree:
+
+```json
+{
+  "countryIso2": "NG",
+  "tiers": [{ "tier": 1, "type": "State" }, { "tier": 2, "type": "LocalGovernmentArea" }],
+  "divisions": [
+    { "name": "Lagos", "capital": "Ikeja", "children": [{ "name": "Ikeja" }, { "name": "Agege" }, "..."] }
+  ]
+}
+```
+
+Adding Ghana's regions/districts later is "drop `ghana-divisions.json` in that folder," not a code change. The recursive upsert (`upsertDivisionNodes` in `seed.ts`) walks the tree depth-first, matching each node by `(countryId, parentId, name)` — safe to re-run, which is how idempotency is verified in [QA.md §5.8](./QA.md#58-seed-idempotency).
+
+**What's actually seeded vs. what the schema supports:** all 36 Nigerian states + the FCT (37 tier-1 rows) are populated with capitals. LGAs are seeded for **Lagos (20) and the FCT (6)** as a working, verified example of the tier-2 pattern — the remaining 34 states' LGAs (Nigeria has 774 total) are not populated, and tier-3 wards (thousands of rows) aren't populated for any state. This is an explicit scope choice, not an oversight: hand-authoring ~750 more LGA names and thousands of ward names from training-data recall risks silently wrong data at a volume that's hard to spot-check, versus a small, verifiable set (37 states + 26 LGAs, all checkable against well-known public facts) that fully proves the mechanism works. Extending coverage is purely a data-authoring task against the format above — see [QA.md §7](./QA.md#7-known-gaps-explicitly-out-of-scope-for-this-pass).
+
+**Where the country dataset came from:** ported from a working, already-in-production seed (`spending-advisor/apps/api/app/data/countries.json`) rather than authored from memory — 250 rows of name/ISO2/ISO3/numeric code/dial code/currency/region, vetted by prior use. That source dataset has no `capital` field; capitals were added here via a name→capital lookup for all 250 entries (243 have one — the remaining 7, like Antarctica and a few uninhabited/administered territories, genuinely don't).
+
+---
+
+## 8. Frontend Architecture
+
+`apps/web` is now a **fully built client dashboard** — every client-facing API capability (§7) has a real form or action behind it, not just a read-only render. What follows describes the whole thing; §8.5 lists what's still deliberately out of scope (mainly: an admin UI, and automated frontend tests).
+
+### 8.1 Route Structure
+
+```
+apps/web/src/app/
+  page.tsx                      # public landing ("/")
+  login/page.tsx                 # two-step: credentials, then a 2FA code if required
+  signup/page.tsx
+  forgot-password/page.tsx
+  reset-password/page.tsx        # token from query param or pasted manually
+  api/auth/
+    login/route.ts               # Route Handler: proxies to the API, sets cookies
+    signup/route.ts               # same, for signup
+    logout/route.ts               # clears cookies
+    2fa-verify/route.ts           # completes a 2FA login challenge, sets cookies
+    forgot-password/route.ts      # proxies, no cookies
+    reset-password/route.ts       # proxies, no cookies
+  dashboard/
+    layout.tsx                    # server component: redirects to /login if unauthenticated
+    page.tsx                      # overview — GET /analytics/me/overview
+    projects/page.tsx             # GET /projects
+    projects/[id]/page.tsx        # GET /projects/:id
+    invoices/page.tsx             # GET /invoices
+    invoices/[id]/page.tsx        # GET /invoices/:id + pay-with-wallet / pay-with-processor
+    wallet/page.tsx                # balance + transactions + fund form
+    support/page.tsx               # ticket list
+    support/new/page.tsx           # create ticket
+    support/[id]/page.tsx          # ticket detail + reply
+    organization/page.tsx          # org details + KYC document submission
+    settings/page.tsx              # profile, password, 2FA, bank accounts
+```
+
+No `/admin` surface — everything built is the client-facing dashboard; an admin UI (project/invoice creation, ticket management, KYC review, staff management) is a separate, not-yet-started scope, since every one of those is a staff/admin-only API capability with no corresponding client-role user story.
+
+### 8.2 Auth: Why a Proxy, Not a Direct Browser Call
+
+The obvious approach — browser JS calls the NestJS API directly and holds the JWT in `localStorage` or a JS-readable cookie — was deliberately not taken, because that pattern makes the access token stealable via any XSS bug in the app. Instead:
+
+1. `POST /api/auth/login` (a **Next.js** Route Handler, not the NestJS API) receives the form submission.
+2. It calls the real API (`NAWILL_API_URL` env var, `POST /auth/login`) server-to-server.
+3. On success, it sets `nawill_access_token` and `nawill_refresh_token` as `httpOnly` cookies on the response — browser JavaScript can never read them, only send them back automatically on same-origin requests. If the API reports `requiresTwoFactor`, no cookies are set yet — the login page switches to a code-entry step, and `POST /api/auth/2fa-verify` (same cookie-setting shape) completes the session once the code checks out.
+4. Every dashboard page is a **Server Component**. It reads the access token cookie via `next/headers` (`lib/session.ts`) and calls the NestJS API server-side (`lib/api.ts`), attaching `Authorization: Bearer <token>`. The browser never talks to the NestJS API at all in this build.
+5. `dashboard/layout.tsx` checks cookie *presence* (not validity) and redirects to `/login` if absent — the actual JWT check happens on the API side of every request; an expired token surfaces as a failed fetch on the page (rendered as an inline error, see `lib/api.ts`/`ApiError`), not a client-side redirect. Silently retrying via the refresh token, and redirecting on a 401, is a reasonable follow-up (§8.5).
+
+This is the same shape as a lightweight BFF (backend-for-frontend): the Next.js server is a thin, trusted intermediary, not just a static file server for a SPA.
+
+### 8.3 Data Layer (reads)
+
+`lib/api.ts` exports two functions used by every page:
+- `apiFetch<T>(path)` — for single-resource reads (`{success,message,data}` → returns `data`, throws `ApiError` on `success:false`).
+- `apiFetchPage<T>(path)` — for cursor-paginated lists (§1.4 cursor pagination), returns `{items, meta}`.
+
+Both are server-only (rely on `next/headers` cookies) and both throw a typed `ApiError` (`message`, `status`, `errorCode`, `errors`) rather than returning a boolean — pages `try/catch` once and render an inline error state, matching the pattern already used for every write flow on the API side.
+
+### 8.4 Mutations: Server Actions, One Pattern Everywhere
+
+Every write in the app — fund wallet, pay an invoice (either way), add/verify/default/remove a bank account, create a ticket, reply to one, update profile, change password, update the organization, submit a KYC document, set up/confirm/disable 2FA — is a **Next.js Server Action** in `lib/actions/*.ts`, not a client-side `fetch` to a hand-rolled API route. One file per domain, mirroring the API's own module boundaries (`lib/actions/wallet.ts`, `invoices.ts`, `bank-accounts.ts`, `support.ts`, `profile.ts`, `organization.ts`, `two-factor.ts`).
+
+Every action returns the same shape (`lib/action-result.ts`):
+
+```ts
+interface ActionResult {
+  ok?: boolean;
+  error?: string;
+  fieldErrors?: Record<string, string>;
+  message?: string;
+  data?: Record<string, unknown>;   // a payment link, a TOTP QR code, ...
+}
+```
+
+`actionErrorFrom(e)` turns a caught `ApiError` into this shape once, so no action hand-rolls its own error branch — the same discipline as `common/auth/access.util.ts` on the API side (§4). Forms consume actions via React's `useFormState`/`useFormStatus` (e.g. `InvoicePayActions`, `FundWalletForm`, `TwoFactorSection`) — the component re-renders with the action's return value, no client-side `fetch`/loading-state bookkeeping per form. Money-moving actions (`fundWallet`, `payInvoiceWithWallet`, `payInvoiceWithProcessor`) generate an `Idempotency-Key` via `crypto.randomUUID()` per submission, same contract as curling the API directly (§4.5).
+
+**This is verified working end-to-end, not just code-reviewed.** Next.js Server Actions are invoked over HTTP via a `Next-Action`-style protocol (hidden form fields carrying an action reference + bound args) that's normally only exercised by the browser's JS runtime. During this build, that protocol was replicated directly with `curl` — extracting the real hidden-field values from a rendered page and POSTing multipart form data — for four representative flows: `fundWallet` (initiates a real payment, returns a real mock-processor link), `payInvoiceWithWallet` (a seeded invoice went from `pending` to `paid` and the wallet balance decremented by exactly the invoice total, both confirmed via direct Prisma/API checks), `updateProfile` (the new name/phone persisted, confirmed via `GET /users/me`), and `createSupportTicket` (a real `303` redirect to the new ticket's URL, ticket confirmed to exist via the API). Every other action follows the identical pattern against an already-verified API endpoint, so this wasn't repeated for all ~15, but the mechanism itself — cookie auth flowing through a Server Action into the API and back — is proven, not assumed.
+
+### 8.5 What's Deliberately Not Built
+
+- **No admin UI** — staff/admin-only capabilities (project/invoice creation, ticket assignment, KYC review, staff management, wallet adjustments) have no interface. Every one of them is exercised by the API's own e2e suite (`docs/QA.md`), just not from a browser.
+- **No token refresh loop** — an expired access token surfaces as a failed fetch (inline error on the page), not a silent refresh-and-retry or a forced redirect to `/login`.
+- **No project milestones/change-history/status-requests UI** — matches the API, which doesn't expose them yet either (`docs/PRD.md §4.1`).
+- **No real file upload** — the KYC document form takes a `fileId` as a text reference, matching the API's own metadata-only design (`docs/QA.md §7`).
+- **No automated frontend tests** — see `docs/QA.md §7` for exactly what was manually/`curl`-verified instead, and why a Playwright/RTL suite wasn't added yet.
+- **Styling is intentionally plain** — Tailwind utility classes and a small set of shared primitives (`components/ui/*`), no component library, no design tokens beyond one brand color.
+
+---
+
+*End of Architecture doc — Nawill App v1.0.*

@@ -1,0 +1,21 @@
+name: Deploy (dev)
+
+# Every push to `dev` (i.e. every PR merge into dev, since direct pushes to dev are
+# discouraged by convention — see docs/TECHNICAL.md §8) redeploys the dev environment.
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment_name: dev
+      branch: dev
+    secrets:
+      SSH_HOST: ${{ secrets.DEV_SSH_HOST }}
+      SSH_USER: ${{ secrets.DEV_SSH_USER }}
+      SSH_KEY: ${{ secrets.DEV_SSH_KEY }}
+      APP_PATH: ${{ secrets.DEV_APP_PATH }}
+      API_ENV_FILE: ${{ secrets.DEV_API_ENV_FILE }}
+      WEB_ENV_FILE: ${{ secrets.DEV_WEB_ENV_FILE }}

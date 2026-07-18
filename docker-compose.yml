@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nawill
+      POSTGRES_USER: nawill
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nawill"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "3000:3000"
+    # apps/api/.env supplies everything else (JWT secrets, Swagger creds, Paystack
+    # key, super-admin credentials, ...) — locally that's the file you already have
+    # for `make dev-api`; in a deployed environment it's what deploy-dev.yml /
+    # deploy-prod.yml write from GitHub Secrets before this command ever runs
+    # (see docs/TECHNICAL.md §8). DATABASE_URL/REDIS_URL are overridden below
+    # regardless of what's in that file, since inside this network the hostnames
+    # are the service names, not localhost.
+    env_file:
+      - apps/api/.env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://nawill:password@postgres:5432/nawill?schema=public
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Baked in at build time for anything Next.js prerenders to a static page.
+        NAWILL_API_URL: http://api:3000/api/v1
+    ports:
+      - "8000:3000"
+    env_file:
+      - apps/web/.env.local
+    environment:
+      # Overrides whatever's in .env.local — inside this network the API is
+      # reachable at the service name, not localhost.
+      NAWILL_API_URL: http://api:3000/api/v1
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:

@@ -1,0 +1,91 @@
+name: CI
+
+# Runs on every push and PR to dev/main, and on PRs targeting them — the gate that
+# has to pass before a PR is mergeable (see docs/TECHNICAL.md §8 branching model).
+# Deploy workflows (deploy-dev.yml, deploy-prod.yml) do not re-run these checks —
+# by the time a push lands on dev or main, this workflow already vetted it via the PR.
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          # POSTGRES_USER=runner (the default GitHub-hosted runner OS user) + trust
+          # auth replicates this project's local dev setup exactly (see docs/QA.md §3
+          # decision log) — apps/api/test/setup/global-setup.ts needs zero CI-specific
+          # branching because of it; it just works the same way here as on a laptop.
+          POSTGRES_USER: runner
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U runner"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install postgresql-client (createdb/dropdb, used by the e2e global-setup)
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile=false
+      - name: Typecheck
+        working-directory: apps/api
+        run: pnpm exec tsc --noEmit -p tsconfig.json
+      - name: Unit tests
+        working-directory: apps/api
+        run: pnpm test
+      - name: E2E tests
+        working-directory: apps/api
+        # No DATABASE_URL here on purpose — global-setup.ts (test/setup/) creates its
+        # own throwaway "nawill_test" database and injects its own connection string;
+        # setting one here would just be overwritten. See docs/QA.md §3.
+        env:
+          JWT_ACCESS_SECRET: ci-access-secret
+          JWT_REFRESH_SECRET: ci-refresh-secret
+          MOCK_PROCESSOR_WEBHOOK_SECRET: ci-mock-processor-secret
+          SUPER_ADMIN_EMAIL: admin@nawill.ng
+          SUPER_ADMIN_PASSWORD: Change-Me-Now9!
+        run: pnpm test:e2e
+      - name: Build
+        working-directory: apps/api
+        run: pnpm build
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile=false
+      - name: Build
+        working-directory: apps/web
+        env:
+          NAWILL_API_URL: http://localhost:4000/api/v1
+        run: pnpm build

@@ -1,0 +1,977 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────
+
+enum UserType {
+  client
+  staff
+  admin
+}
+
+enum ClientType {
+  individual
+  corporate
+}
+
+enum TwoFactorMethod {
+  none
+  email
+  totp
+}
+
+enum KycStatus {
+  pending
+  submitted
+  approved
+  rejected
+}
+
+enum SizeRange {
+  s1_10
+  s11_50
+  s51_200
+  s200_plus
+}
+
+enum DocType {
+  cac_certificate
+  utility_bill
+  id_card
+  other
+}
+
+enum ReviewStatus {
+  pending
+  approved
+  rejected
+}
+
+enum PermissionAction {
+  read
+  write
+  update
+  delete
+}
+
+enum ServicePillar {
+  build
+  consult
+  talent
+  addon
+}
+
+enum ServiceType {
+  core
+  custom
+  addon
+}
+
+enum BillingModel {
+  project
+  retainer
+  per_session
+  placement
+  recurring
+}
+
+enum EngagementModel {
+  project_based
+  retainer
+}
+
+enum ProjectPhase {
+  pre_project
+  ongoing
+  post_project
+  maintenance
+}
+
+enum ProjectType {
+  website
+  web_app
+  mobile_app
+  api_backend
+  other
+}
+
+enum Timeline {
+  lt_1m
+  m1_3
+  m3_6
+  m6_plus
+  not_sure
+}
+
+enum PreferredContact {
+  whatsapp
+  email
+}
+
+enum LeadStatus {
+  new
+  contacted
+  proposal_sent
+  won
+  lost
+}
+
+enum MilestoneStatus {
+  pending
+  in_progress
+  delivered
+  accepted
+}
+
+enum ChangeType {
+  update
+  phase_change
+  scope_change
+  note
+}
+
+enum StatusRequestStatus {
+  open
+  answered
+}
+
+enum InvoiceStatus {
+  draft
+  pending
+  partially_paid
+  paid
+  cancelled
+  overdue
+}
+
+enum ProcessorName {
+  paystack
+  flutterwave
+  interswitch
+  remita
+  mock
+}
+
+enum ProcessorStatus {
+  active
+  disabled
+}
+
+enum PaymentPurpose {
+  invoice_payment
+  wallet_funding
+}
+
+enum PaymentStatus {
+  initiated
+  pending
+  successful
+  failed
+  reversed
+  abandoned
+}
+
+enum NotificationProcessingStatus {
+  received
+  processed
+  failed
+  ignored
+}
+
+enum WalletStatus {
+  active
+  frozen
+}
+
+enum WalletDirection {
+  credit
+  debit
+}
+
+enum WalletTxnSource {
+  funding
+  invoice_payment
+  refund
+  adjustment
+}
+
+enum WalletTxnStatus {
+  pending
+  completed
+  failed
+  reversed
+}
+
+enum FilePurpose {
+  avatar
+  kyc
+  ticket_attachment
+  invoice_pdf
+  blog_image
+  other
+}
+
+enum TicketStatus {
+  open
+  in_progress
+  awaiting_customer
+  resolved
+  closed
+}
+
+enum TicketPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum ReferralStatus {
+  pending
+  signed_up
+  converted
+  expired
+}
+
+enum CommissionType {
+  percentage
+  fixed
+}
+
+enum CommissionStatus {
+  pending
+  approved
+  paid
+  rejected
+}
+
+enum PayoutMethod {
+  wallet_credit
+  bank_transfer
+}
+
+// ── Identity ─────────────────────────────────────────────────────────────
+
+model Country {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name           String
+  officialName   String?
+  iso2           String  @unique
+  iso3           String  @unique
+  numericCode    String?
+  dialCode       String
+  capital        String?
+  timezone       String?
+  region         String?
+  subregion      String?
+  currencyCode   String
+  currencyName   String?
+  currencySymbol String?
+
+  // Flag is derived from iso2 at read time (regional-indicator Unicode trick), not
+  // stored — see src/common/util/flag-emoji.ts. One less thing to keep in sync.
+
+  users     User[]
+  divisions AdministrativeDivision[]
+
+  @@map("countries")
+}
+
+/// Generic, recursive administrative-division tree: Nigeria is
+/// State (tier1) -> LocalGovernmentArea (tier2) -> Ward (tier3), but the same table
+/// models any country's hierarchy to any depth — see docs/ARCHITECTURE.md §7.9.
+model AdministrativeDivision {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  countryId String
+  country   Country                  @relation(fields: [countryId], references: [id])
+  parentId  String?
+  parent    AdministrativeDivision?  @relation("DivisionParent", fields: [parentId], references: [id])
+  children  AdministrativeDivision[] @relation("DivisionParent")
+
+  /// 1 = top level (e.g. State), 2 = next (e.g. LocalGovernmentArea), 3 = next (e.g.
+  /// Ward), and so on — a plain integer rather than an enum so a country needing a
+  /// 5th tier never needs a schema change, just another row shape.
+  tier    Int
+  /// Free-text label for what this tier is called in this country — "State",
+  /// "LocalGovernmentArea", "Ward", "Province", "District" — camelCase/TitleCase,
+  /// deliberately not an enum, since it varies per country and tier.
+  type    String
+  name    String
+  capital String?
+  code    String?
+
+  @@unique([countryId, parentId, name])
+  @@index([countryId, tier])
+  @@index([parentId])
+  @@map("administrative_divisions")
+}
+
+model Organization {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name       String
+  sector     String
+  rcNumber   String?   @unique
+  headOffice String
+  sizeRange  SizeRange
+  kycStatus  KycStatus @default(pending)
+
+  users        User[]
+  kycDocuments KycDocument[]
+  projects     Project[]
+  invoices     Invoice[]
+
+  @@map("organizations")
+}
+
+model User {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name            String
+  email           String        @unique
+  passwordHash    String
+  emailVerifiedAt DateTime?
+  userType        UserType      @default(client)
+  clientType      ClientType?
+  organizationId  String?
+  organization    Organization? @relation(fields: [organizationId], references: [id])
+  countryId       String?
+  country         Country?      @relation(fields: [countryId], references: [id])
+  phoneNo         String?
+  avatarFileId    String?
+  lastLoginAt     DateTime?
+
+  // Durable 2FA settings only. Login lockout counters, password-reset tokens, 2FA
+  // login challenges, and pending TOTP-setup secrets are Redis-only (short-lived,
+  // deliberately not persisted) — see docs/ARCHITECTURE.md §7.7.
+  twoFactorMethod TwoFactorMethod @default(none)
+  twoFactorSecret String?
+
+  userRoles              UserRole[]             @relation("UserRoles")
+  assignedUserRoles      UserRole[]             @relation("AssignedByUser")
+  ownedProjects          Project[]              @relation("ProjectOwner")
+  submittedInquiries     ProjectInquiry[]       @relation("InquirySubmitter")
+  assignedInquiries      ProjectInquiry[]       @relation("InquiryAssignee")
+  projectChanges         ProjectChange[]        @relation("ProjectChangedBy")
+  requestedStatusUpdates ProjectStatusRequest[] @relation("StatusRequester")
+  answeredStatusUpdates  ProjectStatusRequest[] @relation("StatusAnswerer")
+  issuedInvoices         Invoice[]              @relation("InvoiceIssuer")
+  initiatedPayments      Payment[]              @relation("PaymentInitiator")
+  wallet                 Wallet?
+  initiatedWalletTxns    WalletTransaction[]    @relation("WalletTxnInitiator")
+  raisedTickets          SupportTicket[]        @relation("TicketRaiser")
+  assignedTickets        SupportTicket[]        @relation("TicketAssignee")
+  ticketMessages         TicketMessage[]        @relation("MessageSender")
+  auditLogs              AuditLog[]             @relation("AuditActor")
+  reviewedKycDocuments   KycDocument[]          @relation("KycReviewer")
+
+  // Phase 3 — not built in this pass; see docs/PRD.md §4.3 and docs/ARCHITECTURE.md §7.6
+  referralCode      ReferralCode?
+  referralsMade     Referral[]    @relation("ReferralsMade")
+  referralsReceived Referral[]    @relation("ReferralsReceived")
+
+  bankAccounts BankAccount[]
+
+  @@map("users")
+}
+
+model KycDocument {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  docType        DocType
+  fileId         String
+  reviewStatus   ReviewStatus @default(pending)
+  reviewedBy     String?
+  reviewer       User?        @relation("KycReviewer", fields: [reviewedBy], references: [id])
+  reviewNote     String?
+
+  @@map("kyc_documents")
+}
+
+// ── RBAC ─────────────────────────────────────────────────────────────────
+
+model Role {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name        String  @unique
+  description String?
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  domain String
+  action PermissionAction
+
+  rolePermissions RolePermission[]
+
+  @@unique([domain, action])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id])
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id])
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  userId     String
+  user       User    @relation("UserRoles", fields: [userId], references: [id])
+  roleId     String
+  role       Role    @relation(fields: [roleId], references: [id])
+  assignedBy String?
+  assigner   User?   @relation("AssignedByUser", fields: [assignedBy], references: [id])
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+// ── Catalogue ────────────────────────────────────────────────────────────
+
+model Service {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name           String        @unique
+  pillar         ServicePillar
+  type           ServiceType
+  billingModel   BillingModel
+  description    String
+  basePriceMinor BigInt?
+  currency       String?
+
+  projects     Project[]
+  invoiceItems InvoiceItem[]
+
+  @@map("services")
+}
+
+// ── Projects ─────────────────────────────────────────────────────────────
+
+model ProjectInquiry {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  fullName         String
+  email            String
+  phone            String?
+  clientType       ClientType
+  projectType      ProjectType
+  timeline         Timeline
+  budgetCurrency   String?
+  budgetRange      String?
+  description      String
+  preferredContact PreferredContact
+  leadStatus       LeadStatus       @default(new)
+  convertedUserId  String?
+  submitter        User?            @relation("InquirySubmitter", fields: [convertedUserId], references: [id])
+  assignedTo       String?
+  assignee         User?            @relation("InquiryAssignee", fields: [assignedTo], references: [id])
+
+  project  Project?
+  referral Referral? // Phase 3 — not built in this pass
+
+  @@map("project_inquiries")
+}
+
+model Project {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name            String
+  description     String?
+  organizationId  String
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  ownerId         String
+  owner           User            @relation("ProjectOwner", fields: [ownerId], references: [id])
+  serviceId       String?
+  service         Service?        @relation(fields: [serviceId], references: [id])
+  inquiryId       String?         @unique
+  inquiry         ProjectInquiry? @relation(fields: [inquiryId], references: [id])
+  engagementModel EngagementModel @default(project_based)
+  proposalFileId  String?
+  phase           ProjectPhase    @default(pre_project)
+  startDate       DateTime?
+  dueDate         DateTime?
+  completedAt     DateTime?
+
+  milestones          ProjectMilestone[]
+  changes             ProjectChange[]
+  statusRequests      ProjectStatusRequest[]
+  invoices            Invoice[]
+  referralConversions Referral[] // Phase 3 — not built in this pass
+
+  @@map("projects")
+}
+
+model ProjectMilestone {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  projectId       String
+  project         Project         @relation(fields: [projectId], references: [id])
+  title           String
+  description     String?
+  sortOrder       Int             @default(0)
+  dueDate         DateTime?
+  milestoneStatus MilestoneStatus @default(pending)
+  deliveredAt     DateTime?
+  acceptedAt      DateTime?
+
+  @@map("project_milestones")
+}
+
+model ProjectChange {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  projectId  String
+  project    Project    @relation(fields: [projectId], references: [id])
+  title      String
+  detail     String
+  changedBy  String
+  changer    User       @relation("ProjectChangedBy", fields: [changedBy], references: [id])
+  changeType ChangeType
+
+  @@map("project_changes")
+}
+
+model ProjectStatusRequest {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  projectId     String
+  project       Project             @relation(fields: [projectId], references: [id])
+  requestedBy   String
+  requester     User                @relation("StatusRequester", fields: [requestedBy], references: [id])
+  message       String?
+  requestStatus StatusRequestStatus @default(open)
+  answeredBy    String?
+  answerer      User?               @relation("StatusAnswerer", fields: [answeredBy], references: [id])
+  answer        String?
+
+  @@map("project_status_requests")
+}
+
+// ── Invoices ─────────────────────────────────────────────────────────────
+
+model Invoice {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  invoiceNo      String        @unique
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  projectId      String?
+  project        Project?      @relation(fields: [projectId], references: [id])
+  issuedBy       String
+  issuer         User          @relation("InvoiceIssuer", fields: [issuedBy], references: [id])
+  currency       String
+  subtotalMinor  BigInt
+  taxMinor       BigInt        @default(0)
+  totalMinor     BigInt
+  invoiceStatus  InvoiceStatus @default(draft)
+  dueDate        DateTime
+  paidAt         DateTime?
+
+  items               InvoiceItem[]
+  payments            Payment[]
+  walletTxns          WalletTransaction[]
+  referralCommissions ReferralCommission[] // Phase 3 — not built in this pass
+
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  invoiceId         String
+  invoice           Invoice  @relation(fields: [invoiceId], references: [id])
+  serviceId         String?
+  service           Service? @relation(fields: [serviceId], references: [id])
+  itemName          String
+  quantity          Int
+  unitAmountMinor   BigInt
+  actualAmountMinor BigInt
+
+  @@map("invoice_items")
+}
+
+// ── Payments ─────────────────────────────────────────────────────────────
+
+model PaymentProcessor {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name            ProcessorName
+  isDefault       Boolean         @default(false)
+  configEncrypted Json            @default("{}")
+  processorStatus ProcessorStatus @default(active)
+
+  payments             Payment[]
+  paymentNotifications PaymentNotification[]
+
+  @@map("payment_processors")
+}
+
+model Payment {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  purpose            PaymentPurpose
+  invoiceId          String?
+  invoice            Invoice?         @relation(fields: [invoiceId], references: [id])
+  walletId           String?
+  wallet             Wallet?          @relation(fields: [walletId], references: [id])
+  initiatedBy        String
+  initiator          User             @relation("PaymentInitiator", fields: [initiatedBy], references: [id])
+  processorId        String
+  processor          PaymentProcessor @relation(fields: [processorId], references: [id])
+  amountMinor        BigInt
+  currency           String
+  idempotencyKey     String           @unique
+  reference          String           @unique
+  processorReference String?
+  paymentLink        String?
+  paymentStatus      PaymentStatus    @default(initiated)
+  initiatedAt        DateTime         @default(now())
+  reconciledAt       DateTime?
+  failureReason      String?
+
+  notifications PaymentNotification[]
+  walletTxns    WalletTransaction[]
+
+  @@map("payments")
+}
+
+model PaymentNotification {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  processorId      String
+  processor        PaymentProcessor             @relation(fields: [processorId], references: [id])
+  paymentId        String?
+  payment          Payment?                     @relation(fields: [paymentId], references: [id])
+  eventType        String
+  rawPayload       Json
+  signatureValid   Boolean
+  processedAt      DateTime?
+  processingStatus NotificationProcessingStatus @default(received)
+
+  @@map("payment_notifications")
+}
+
+// ── Wallet ───────────────────────────────────────────────────────────────
+
+model Wallet {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  userId       String       @unique
+  user         User         @relation(fields: [userId], references: [id])
+  currency     String       @default("NGN")
+  balanceMinor BigInt       @default(0)
+  walletStatus WalletStatus @default(active)
+
+  transactions    WalletTransaction[]
+  fundingPayments Payment[]
+
+  @@map("wallets")
+}
+
+model WalletTransaction {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  walletId           String
+  wallet             Wallet          @relation(fields: [walletId], references: [id])
+  direction          WalletDirection
+  source             WalletTxnSource
+  amountMinor        BigInt
+  balanceAfterMinor  BigInt
+  idempotencyKey     String          @unique
+  referencePaymentId String?
+  referencePayment   Payment?        @relation(fields: [referencePaymentId], references: [id])
+  referenceInvoiceId String?
+  referenceInvoice   Invoice?        @relation(fields: [referenceInvoiceId], references: [id])
+  description        String
+  initiatedBy        String
+  initiator          User            @relation("WalletTxnInitiator", fields: [initiatedBy], references: [id])
+  txnStatus          WalletTxnStatus @default(completed)
+
+  @@map("wallet_transactions")
+}
+
+// ── Payouts ──────────────────────────────────────────────────────────────
+
+model BankAccount {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  userId        String
+  user          User    @relation(fields: [userId], references: [id])
+  bankCode      String
+  bankName      String
+  accountNumber String
+  accountName   String
+  currency      String  @default("NGN")
+  isVerified    Boolean @default(false)
+  isDefault     Boolean @default(false)
+
+  @@unique([userId, bankCode, accountNumber])
+  @@map("bank_accounts")
+}
+
+// ── Support ──────────────────────────────────────────────────────────────
+
+model TicketType {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name        String  @unique
+  description String?
+
+  tickets SupportTicket[]
+
+  @@map("ticket_types")
+}
+
+model SupportTicket {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  ticketNo     String         @unique
+  ticketTypeId String
+  ticketType   TicketType     @relation(fields: [ticketTypeId], references: [id])
+  raisedBy     String
+  raiser       User           @relation("TicketRaiser", fields: [raisedBy], references: [id])
+  assignedTo   String?
+  assignee     User?          @relation("TicketAssignee", fields: [assignedTo], references: [id])
+  subject      String
+  ticketStatus TicketStatus   @default(open)
+  priority     TicketPriority @default(medium)
+  resolvedAt   DateTime?
+
+  messages TicketMessage[]
+
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  ticketId         String
+  ticket           SupportTicket @relation(fields: [ticketId], references: [id])
+  senderId         String
+  sender           User          @relation("MessageSender", fields: [senderId], references: [id])
+  body             String
+  attachmentFileId String?
+  isInternalNote   Boolean       @default(false)
+
+  @@map("ticket_messages")
+}
+
+// ── Audit ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  domain    String
+  entityId  String
+  action    String
+  changedBy String
+  actor     User    @relation("AuditActor", fields: [changedBy], references: [id])
+  before    Json?
+  after     Json?
+  ipAddress String?
+  userAgent String?
+  requestId String?
+
+  @@map("audit_logs")
+}
+
+// ── Referrals (Phase 3 — structure only; no service/controller in this pass) ──
+// See docs/PRD.md §4.3 and docs/ARCHITECTURE.md §7.6 for the intended flow:
+// a client shares their code, a prospect signs up or submits an inquiry tagged
+// with it, and on conversion to a paid project a commission is computed and
+// (eventually) paid out as a wallet credit via `payoutMethod`.
+
+model ReferralCode {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id])
+  code   String @unique
+
+  referrals Referral[]
+
+  @@map("referral_codes")
+}
+
+model Referral {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  referralCodeId     String
+  referralCode       ReferralCode    @relation(fields: [referralCodeId], references: [id])
+  referrerUserId     String
+  referrer           User            @relation("ReferralsMade", fields: [referrerUserId], references: [id])
+  refereeEmail       String
+  refereeUserId      String?
+  referee            User?           @relation("ReferralsReceived", fields: [refereeUserId], references: [id])
+  inquiryId          String?         @unique
+  inquiry            ProjectInquiry? @relation(fields: [inquiryId], references: [id])
+  convertedProjectId String?
+  convertedProject   Project?        @relation(fields: [convertedProjectId], references: [id])
+  referralStatus     ReferralStatus  @default(pending)
+  convertedAt        DateTime?
+
+  commissions ReferralCommission[]
+
+  @@map("referrals")
+}
+
+model ReferralCommission {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  referralId            String
+  referral              Referral         @relation(fields: [referralId], references: [id])
+  invoiceId             String?
+  invoice               Invoice?         @relation(fields: [invoiceId], references: [id])
+  commissionType        CommissionType   @default(percentage)
+  commissionRate        Decimal?         @db.Decimal(5, 2)
+  commissionAmountMinor BigInt
+  commissionStatus      CommissionStatus @default(pending)
+  payoutMethod          PayoutMethod     @default(wallet_credit)
+  paidAt                DateTime?
+
+  @@map("referral_commissions")
+}

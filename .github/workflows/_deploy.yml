@@ -1,0 +1,59 @@
+name: Deploy (reusable)
+
+# Shared by deploy-dev.yml and deploy-prod.yml so the actual deploy mechanics exist
+# in exactly one place — see docs/TECHNICAL.md §8. Not meant to be triggered directly.
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        required: true
+        type: string
+      branch:
+        required: true
+        type: string
+    secrets:
+      SSH_HOST:
+        required: true
+      SSH_USER:
+        required: true
+      SSH_KEY:
+        required: true
+      APP_PATH:
+        required: true
+      API_ENV_FILE:
+        required: true
+      WEB_ENV_FILE:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name }}
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.APP_PATH }}"
+
+            git fetch origin "${{ inputs.branch }}"
+            git reset --hard "origin/${{ inputs.branch }}"
+
+            # Each *_ENV_FILE secret is the full contents of a .env file, pasted in as
+            # one multi-line GitHub Secret — not enumerated var-by-var. See
+            # docs/TECHNICAL.md §8 for the full list of keys each one needs.
+            cat > apps/api/.env <<'NAWILL_ENV_EOF'
+            ${{ secrets.API_ENV_FILE }}
+            NAWILL_ENV_EOF
+
+            cat > apps/web/.env.local <<'NAWILL_ENV_EOF'
+            ${{ secrets.WEB_ENV_FILE }}
+            NAWILL_ENV_EOF
+
+            docker compose build
+            docker compose up -d
+            docker image prune -f
