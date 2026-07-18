@@ -10,8 +10,12 @@ const TEST_REDIS_URL = 'redis://localhost:6379/1';
 const MARKER_PATH = join(__dirname, '.test-db-url');
 
 module.exports = async function globalSetup(): Promise<void> {
-  execSync(`dropdb --if-exists ${TEST_DB_NAME}`, { stdio: 'inherit' });
-  execSync(`createdb ${TEST_DB_NAME}`, { stdio: 'inherit' });
+  // -h localhost forces a TCP connection rather than createdb/dropdb's default of a
+  // Unix socket — the two behave identically against a local Postgres.app-style
+  // install (which exposes both), but a CI service container only exposes TCP, so
+  // relying on the socket default silently breaks there. See docs/QA.md §3.
+  execSync(`dropdb -h localhost --if-exists ${TEST_DB_NAME}`, { stdio: 'inherit' });
+  execSync(`createdb -h localhost ${TEST_DB_NAME}`, { stdio: 'inherit' });
 
   const apiRoot = join(__dirname, '..', '..');
   const env = { ...process.env, DATABASE_URL: TEST_DB_URL };

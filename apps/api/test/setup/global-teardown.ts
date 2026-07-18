@@ -8,7 +8,7 @@ const TEST_REDIS_URL = 'redis://localhost:6379/1';
 const MARKER_PATH = join(__dirname, '.test-db-url');
 
 module.exports = async function globalTeardown(): Promise<void> {
-  execSync(`dropdb --if-exists ${TEST_DB_NAME}`, { stdio: 'inherit' });
+  execSync(`dropdb -h localhost --if-exists ${TEST_DB_NAME}`, { stdio: 'inherit' });
   if (existsSync(MARKER_PATH)) {
     unlinkSync(MARKER_PATH);
   }
