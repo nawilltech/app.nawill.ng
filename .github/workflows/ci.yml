@@ -40,9 +40,10 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      # No `version:` here — pnpm/action-setup reads it from package.json's
+      # "packageManager" field, and specifying both is a hard error (v4 refuses to
+      # pick one), not just a warning.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -76,9 +77,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No `version:` here — pnpm/action-setup reads it from package.json's
+      # "packageManager" field, and specifying both is a hard error (v4 refuses to
+      # pick one), not just a warning.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 20
