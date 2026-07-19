@@ -34,3 +34,12 @@ export async function changePassword(_prev: ActionResult, formData: FormData): P
     return actionErrorFrom(e);
   }
 }
+
+export async function resendVerification(_prev: ActionResult, _formData: FormData): Promise<ActionResult> {
+  try {
+    const result = await apiFetch<{ message: string }>('/auth/resend-verification', { method: 'POST' });
+    return { ok: true, message: result.message };
+  } catch (e) {
+    return actionErrorFrom(e);
+  }
+}

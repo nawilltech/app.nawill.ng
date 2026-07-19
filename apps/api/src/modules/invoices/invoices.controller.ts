@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { InvoicesService } from './invoices.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { CurrentUser, AuthUser } from '../../common/decorators/current-user.decorator';
 import { IdempotencyKey } from '../../common/decorators/idempotency-key.decorator';
 import { Roles } from '../rbac/roles.decorator';
@@ -31,6 +32,13 @@ export class InvoicesController {
   async getById(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     const result = await this.invoicesService.getById(id, user);
     return ok(result, 'Invoice retrieved successfully');
+  }
+
+  @Roles('staff', 'admin')
+  @Patch(':id')
+  async update(@Param('id') id: string, @Body() dto: UpdateInvoiceDto) {
+    const result = await this.invoicesService.update(id, dto);
+    return ok(result, 'Invoice updated successfully');
   }
 
   @Post(':id/pay')

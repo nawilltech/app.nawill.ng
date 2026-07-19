@@ -7,13 +7,15 @@ import { authenticator } from 'otplib';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
-import { DevMailboxService } from '../notifications/dev-mailbox.service';
+import { MailService } from '../notifications/mail.service';
+import { renderEmailTemplate } from '../notifications/email-template';
 import { SAFE_USER_SELECT } from '../users/user.select';
 import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 import { VerifyTwoFactorDto } from './dto/two-factor.dto';
 import { JwtPayload } from './jwt-payload.interface';
 
@@ -26,6 +28,7 @@ export interface AuthTokens {
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_SECONDS = 15 * 60;
 const RESET_TOKEN_TTL_SECONDS = 30 * 60;
+const VERIFY_EMAIL_TTL_SECONDS = 24 * 60 * 60;
 const TOTP_SETUP_TTL_SECONDS = 10 * 60;
 const EMAIL_OTP_TTL_SECONDS = 5 * 60;
 const TWO_FA_CHALLENGE_TTL_SECONDS = 5 * 60;
@@ -37,7 +40,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly redis: RedisService,
-    private readonly mailbox: DevMailboxService,
+    private readonly mail: MailService,
   ) {}
 
   async signup(dto: SignupDto) {
@@ -76,8 +79,49 @@ export class AuthService {
       return created;
     });
 
+    await this.sendVerificationEmail(user.id, user.email, user.name);
+
     const tokens = this.issueTokens(user as Pick<User, 'id' | 'email' | 'userType' | 'organizationId'>);
     return { user, ...tokens };
+  }
+
+  async verifyEmail(dto: VerifyEmailDto): Promise<{ message: string }> {
+    const userId = await this.redis.get(this.verifyEmailKey(dto.token));
+    if (!userId) throw new UnauthorizedException('Invalid or expired verification link');
+
+    await this.prisma.user.update({ where: { id: userId }, data: { emailVerifiedAt: new Date() } });
+    await this.redis.del(this.verifyEmailKey(dto.token));
+    return { message: 'Email verified successfully' };
+  }
+
+  async resendVerification(userId: string): Promise<{ message: string }> {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    if (user.emailVerifiedAt) {
+      return { message: 'Email is already verified' };
+    }
+
+    await this.sendVerificationEmail(user.id, user.email, user.name);
+    return { message: 'Verification email sent' };
+  }
+
+  private async sendVerificationEmail(userId: string, email: string, name: string): Promise<void> {
+    const token = randomUUID();
+    await this.redis.set(this.verifyEmailKey(token), userId, 'EX', VERIFY_EMAIL_TTL_SECONDS);
+    const link = `${this.webAppUrl()}/verify-email?token=${token}`;
+    await this.mail.send(
+      email,
+      'Verify your Nawill email',
+      renderEmailTemplate({
+        heading: `Welcome, ${name}!`,
+        bodyLines: ['Please verify your email address to finish setting up your Nawill account.'],
+        cta: { label: 'Verify email', url: link },
+        footerNote: "This link expires in 24 hours. If you didn't create an account, you can safely ignore this email.",
+      }),
+    );
+  }
+
+  private webAppUrl(): string {
+    return this.config.get<string>('WEB_APP_URL', 'http://localhost:3000');
   }
 
   /** Returns tokens directly, or `{ requiresTwoFactor: true, method, challengeToken }` if 2FA is enabled. */
@@ -158,7 +202,17 @@ export class AuthService {
 
     const token = randomUUID();
     await this.redis.set(this.resetKey(token), user.id, 'EX', RESET_TOKEN_TTL_SECONDS);
-    this.mailbox.send(user.email, 'Reset your Nawill password', `Reset token: ${token} (expires in 30 minutes)`);
+    const link = `${this.webAppUrl()}/reset-password?token=${token}`;
+    await this.mail.send(
+      user.email,
+      'Reset your Nawill password',
+      renderEmailTemplate({
+        heading: 'Reset your password',
+        bodyLines: ['We received a request to reset the password on your Nawill account.'],
+        cta: { label: 'Reset password', url: link },
+        footerNote: "This link expires in 30 minutes. If you didn't request this, you can safely ignore this email.",
+      }),
+    );
     return genericResponse;
   }
 
@@ -209,7 +263,16 @@ export class AuthService {
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
     const code = this.generateOtp();
     await this.redis.set(this.emailSetupOtpKey(userId), this.hashCode(code), 'EX', EMAIL_OTP_TTL_SECONDS);
-    this.mailbox.send(user.email, 'Confirm email two-factor authentication', `Your confirmation code is ${code}`);
+    await this.mail.send(
+      user.email,
+      'Confirm email two-factor authentication',
+      renderEmailTemplate({
+        heading: 'Confirm email two-factor authentication',
+        bodyLines: ['Enter this code to turn on email-based two-factor authentication for your Nawill account.'],
+        code,
+        footerNote: 'This code expires in 5 minutes.',
+      }),
+    );
     return { message: 'Confirmation code sent to your email' };
   }
 
@@ -243,7 +306,16 @@ export class AuthService {
     if (user.twoFactorMethod === 'email') {
       const code = this.generateOtp();
       payload.otpHash = this.hashCode(code);
-      this.mailbox.send(user.email, 'Your Nawill login code', `Your login code is ${code}. It expires in 5 minutes.`);
+      await this.mail.send(
+        user.email,
+        'Your Nawill login code',
+        renderEmailTemplate({
+          heading: 'Your login code',
+          bodyLines: ['Enter this code to finish logging in to your Nawill account.'],
+          code,
+          footerNote: "This code expires in 5 minutes. If you didn't try to log in, you can safely ignore this email.",
+        }),
+      );
     }
 
     await this.redis.set(this.challengeKey(challengeToken), JSON.stringify(payload), 'EX', TWO_FA_CHALLENGE_TTL_SECONDS);
@@ -281,6 +353,9 @@ export class AuthService {
   }
   private resetKey(token: string) {
     return `auth:reset:${token}`;
+  }
+  private verifyEmailKey(token: string) {
+    return `auth:verify-email:${token}`;
   }
   private totpSetupKey(userId: string) {
     return `auth:totp-setup:${userId}`;

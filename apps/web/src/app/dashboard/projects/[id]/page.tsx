@@ -3,6 +3,8 @@ import { apiFetch } from '@/lib/api';
 import { ApiError } from '@/lib/types';
 import { Card } from '@/components/ui/card';
 import { ErrorAlert } from '@/components/ui/alert';
+import { getCurrentUser } from '@/lib/current-user';
+import { EditProjectForm } from '@/components/admin/edit-project-form';
 
 interface Project {
   id: string;
@@ -21,6 +23,9 @@ function formatDate(value: string | null): string {
 }
 
 export default async function ProjectDetailPage({ params }: { params: { id: string } }) {
+  const user = await getCurrentUser();
+  const canManage = user?.userType === 'staff' || user?.userType === 'admin';
+
   let project: Project | null = null;
   let error: string | null = null;
 
@@ -67,6 +72,19 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
               </div>
             </dl>
           </Card>
+
+          {canManage && (
+            <Card>
+              <p className="mb-4 font-heading text-lg font-semibold text-neutral-900">Manage project</p>
+              <EditProjectForm
+                projectId={project.id}
+                name={project.name}
+                description={project.description}
+                phase={project.phase}
+                dueDate={project.dueDate}
+              />
+            </Card>
+          )}
 
           <p className="text-xs text-neutral-500">
             Milestones, change history, and status requests exist in the API design but aren&apos;t built yet — see

@@ -6,6 +6,7 @@ import { RefreshDto } from './dto/refresh.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ConfirmTotpDto, DisableTwoFactorDto, EnableEmailTwoFactorDto, VerifyTwoFactorDto } from './dto/two-factor.dto';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ok } from '../../common/dto/service-result';
@@ -69,6 +70,21 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto) {
     const result = await this.authService.changePassword(user.userId, dto);
+    return ok(result, result.message);
+  }
+
+  @Public()
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  async verifyEmail(@Body() dto: VerifyEmailDto) {
+    const result = await this.authService.verifyEmail(dto);
+    return ok(result, result.message);
+  }
+
+  @Post('resend-verification')
+  @HttpCode(HttpStatus.OK)
+  async resendVerification(@CurrentUser() user: AuthUser) {
+    const result = await this.authService.resendVerification(user.userId);
     return ok(result, result.message);
   }
 

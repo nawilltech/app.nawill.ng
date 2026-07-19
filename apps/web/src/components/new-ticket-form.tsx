@@ -1,8 +1,9 @@
 'use client';
 
 import { useFormState, useFormStatus } from 'react-dom';
+import Link from 'next/link';
 import { createSupportTicket } from '@/lib/actions/support';
-import { Field, Input, Select } from '@/components/ui/input';
+import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ErrorAlert } from '@/components/ui/alert';
 import { ActionResult } from '@/lib/action-result';
@@ -52,9 +53,20 @@ export function NewTicketForm({ ticketTypes }: { ticketTypes: TicketType[] }) {
         </Select>
       </Field>
 
+      <Field label="Message">
+        <Textarea name="message" required minLength={1} rows={4} placeholder="Describe your issue…" />
+      </Field>
+
       {state.error && <ErrorAlert message={state.error} />}
 
-      <SubmitButton />
+      <div className="flex gap-3">
+        <SubmitButton />
+        <Link href="/dashboard/support">
+          <Button type="button" variant="secondary">
+            Cancel
+          </Button>
+        </Link>
+      </div>
     </form>
   );
 }

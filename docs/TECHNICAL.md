@@ -102,10 +102,11 @@ X-Request-Id: <uuid>                      # generated if absent; echoed back
 
 ```
 Auth & Users
-  POST   /auth/signup                 POST  /auth/verify-email      (not implemented — see PRD §4.1)
+  POST   /auth/signup                 POST  /auth/verify-email      (public — {token})
   POST   /auth/login                  POST  /auth/refresh
   POST   /auth/forgot-password        POST  /auth/reset-password
   POST   /auth/change-password        (authenticated)
+  POST   /auth/resend-verification    (authenticated, no-op if already verified)
   POST   /auth/2fa/verify             (public — completes a login challenge)
   POST   /auth/2fa/totp/setup         POST  /auth/2fa/totp/enable
   POST   /auth/2fa/email/request-code POST  /auth/2fa/email/enable
@@ -114,12 +115,16 @@ Auth & Users
   GET    /users            (staff)    PATCH /users/:id       (admin)
 
 Organizations & KYC
+  GET    /organizations (staff/admin) → list all, for the admin org directory
   POST   /organizations               GET   /organizations/:id
   PATCH  /organizations/:id           POST  /organizations/:id/kyc-documents
 
 Roles & Permissions (admin)
-  GET    /roles          POST /roles          PATCH /roles/:id
-  GET    /permissions    POST /roles/:id/permissions
+  GET    /roles                       → seeded roles (super_admin, admin, project_manager, finance, support_agent, client)
+  GET    /users/:userId/roles         POST  /users/:userId/roles          {roleId}
+  DELETE /users/:userId/roles/:roleId → revoke (soft delete on user_roles)
+  The full (domain, action) permission-matrix tables (permissions/role_permissions) are seeded but not
+  yet exposed or enforced — RolesGuard still checks only the coarse `users.userType` — see QA.md §7.
 
 Project Inquiries (leads)
   POST   /project-inquiries           (public — website "Start a Project" form)
@@ -129,6 +134,7 @@ Project Inquiries (leads)
 Projects
   GET    /projects                    POST  /projects        (staff)
   GET    /projects/:id                PATCH /projects/:id    (staff)
+  DELETE /projects/:id                (staff, soft delete)
   GET    /projects/:id/milestones     POST/PATCH milestones  (staff)
   GET    /projects/:id/changes        POST  /projects/:id/changes (staff)
   POST   /projects/:id/status-requests        (client)
@@ -137,9 +143,16 @@ Services (catalogue)
   GET    /services                    POST/PATCH /services   (admin)
 
 Invoices
-  GET    /invoices                    POST  /invoices        (staff)
-  GET    /invoices/:id                PATCH /invoices/:id    (staff)
+  GET    /invoices                    POST  /invoices        (staff) — items[] (1+), discountMinor?, vatEnabled?, vatRate?
+  GET    /invoices/:id                PATCH /invoices/:id    (staff — dueDate, invoiceStatus, notes)
   POST   /invoices/:id/pay            → returns payment link
+  Invoice items support an optional `period` (freeform, e.g. "1 Year") and `isCancelled` (waives the
+  line — actualAmountMinor becomes 0, unitAmountMinor kept for the struck-through PDF display). Reads
+  include a minimal `organization: {name, headOffice}` for the invoice PDF's bill-to block (see
+  Architecture doc §8.6). Discount/VAT: `subtotalMinor` = sum of non-cancelled item amounts;
+  `discountMinor` (flat, optional, must not exceed subtotalMinor — 400 if it does) is subtracted first;
+  `vatEnabled` + `vatRate` (percentage, e.g. 7.5, required when vatEnabled) compute `taxMinor` on the
+  discounted amount; `totalMinor` = (subtotalMinor − discountMinor) + taxMinor.
 
 Payments
   POST   /payments/initiate           GET   /payments/:id
@@ -179,9 +192,15 @@ Files
   POST   /files (multipart)           GET   /files/:id       DELETE /files/:id
 
 Support
-  GET    /support-tickets             POST  /support-tickets
-  GET    /support-tickets/:id         PATCH /support-tickets/:id
-  POST   /support-tickets/:id/messages
+  GET    /support-tickets             POST  /support-tickets  (creates the ticket + its opening message in one call — `message` is required on CreateTicketDto)
+  GET    /support-tickets/:id         PATCH /support-tickets/:id  (staff — assignedTo, ticketStatus, priority)
+  POST   /support-tickets/:id/close   (ticket owner or staff/admin) → self-service close, sets ticketStatus=closed + resolvedAt
+  POST   /support-tickets/:id/messages  (for replies after the ticket exists)
+
+Knowledge Base (read-only from the client; no admin authoring UI yet — see QA.md §7)
+  GET    /knowledge-base/categories               → list, each with an articleCount
+  GET    /knowledge-base/categories/:slug         → category + its articles
+  GET    /knowledge-base/articles/:slug           → single article
   GET    /ticket-types
 
 Blog / FAQ (admin write, public read)
@@ -369,7 +388,7 @@ sequenceDiagram
     participant API
     participant Redis
     participant PG as PostgreSQL
-    participant Mailbox as DevMailbox
+    participant Mailbox as MailService
 
     User->>API: POST /auth/login { email, password }
     API->>Redis: GET auth:lock:{email}

@@ -122,9 +122,11 @@ function DisableTwoFactor() {
   const [state, formAction] = useFormState<ActionResult, FormData>(disableTwoFactor, {});
   return (
     <form action={formAction} className="flex items-end gap-3">
-      <Field label="Confirm password to disable">
-        <Input name="password" type="password" required className="w-56" />
-      </Field>
+      <div className="w-56">
+        <Field label="Confirm password to disable">
+          <Input name="password" type="password" required />
+        </Field>
+      </div>
       <SubmitButton>Disable 2FA</SubmitButton>
       {state.error && <ErrorAlert message={state.error} />}
       {state.ok && <SuccessAlert message={state.message ?? 'Disabled'} />}

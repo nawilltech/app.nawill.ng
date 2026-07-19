@@ -62,6 +62,11 @@ export class ProjectsService {
     });
   }
 
+  async remove(id: string): Promise<void> {
+    await this.getByIdOrThrow(id);
+    await this.prisma.project.update({ where: { id }, data: { deletedAt: new Date() } });
+  }
+
   private async getByIdOrThrow(id: string) {
     const project = await this.prisma.project.findFirst({ where: { id, deletedAt: null } });
     if (!project) throw new NotFoundException('Project not found');

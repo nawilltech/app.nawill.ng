@@ -26,6 +26,9 @@ export function FundWalletForm() {
           <Input name="amount" type="number" min="1" step="0.01" required className="w-40" />
         </Field>
         <SubmitButton />
+        <Button type="reset" variant="secondary">
+          Cancel
+        </Button>
       </div>
 
       {state.error && <ErrorAlert message={state.error} />}

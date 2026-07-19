@@ -3,6 +3,7 @@ import { apiFetchPage } from '@/lib/api';
 import { ApiError } from '@/lib/types';
 import { ErrorAlert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { TicketStatusBadge, TicketPriorityBadge } from '@/components/status-badge';
 
 interface SupportTicket {
   id: string;
@@ -54,8 +55,12 @@ export default async function SupportPage() {
                   </Link>
                 </td>
                 <td className="py-2">{ticket.subject}</td>
-                <td className="py-2 capitalize">{ticket.ticketStatus.replace(/_/g, ' ')}</td>
-                <td className="py-2 capitalize">{ticket.priority}</td>
+                <td className="py-2">
+                  <TicketStatusBadge status={ticket.ticketStatus} />
+                </td>
+                <td className="py-2">
+                  <TicketPriorityBadge priority={ticket.priority} />
+                </td>
               </tr>
             ))}
           </tbody>

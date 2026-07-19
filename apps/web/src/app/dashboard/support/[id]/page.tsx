@@ -4,6 +4,8 @@ import { ApiError } from '@/lib/types';
 import { Card } from '@/components/ui/card';
 import { ErrorAlert } from '@/components/ui/alert';
 import { TicketReplyForm } from '@/components/ticket-reply-form';
+import { CloseTicketButton } from '@/components/close-ticket-button';
+import { TicketStatusBadge, TicketPriorityBadge } from '@/components/status-badge';
 
 interface TicketMessage {
   id: string;
@@ -42,11 +44,16 @@ export default async function TicketDetailPage({ params }: { params: { id: strin
 
       {ticket && (
         <>
-          <div>
-            <h1 className="text-2xl font-semibold">{ticket.subject}</h1>
-            <p className="mt-1 text-sm capitalize text-neutral-500">
-              {ticket.ticketNo} · {ticket.ticketStatus.replace(/_/g, ' ')} · {ticket.priority} priority
-            </p>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-semibold">{ticket.subject}</h1>
+              <div className="mt-1 flex items-center gap-2 text-sm text-neutral-500">
+                <span>{ticket.ticketNo}</span>
+                <TicketStatusBadge status={ticket.ticketStatus} />
+                <TicketPriorityBadge priority={ticket.priority} />
+              </div>
+            </div>
+            {ticket.ticketStatus !== 'closed' && <CloseTicketButton ticketId={ticket.id} />}
           </div>
 
           <div className="flex flex-col gap-3">
@@ -61,7 +68,11 @@ export default async function TicketDetailPage({ params }: { params: { id: strin
             {ticket.messages.length === 0 && <p className="text-sm text-neutral-500">No messages yet.</p>}
           </div>
 
-          <TicketReplyForm ticketId={ticket.id} />
+          {ticket.ticketStatus === 'closed' ? (
+            <p className="text-sm text-neutral-500">This ticket is closed. Contact support to reopen it if needed.</p>
+          ) : (
+            <TicketReplyForm ticketId={ticket.id} />
+          )}
         </>
       )}
     </div>
