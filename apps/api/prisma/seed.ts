@@ -43,6 +43,89 @@ const SERVICES = [
   { name: 'API Integration', pillar: 'addon', type: 'addon', billingModel: 'project', description: 'Third-party API integration add-on.' },
 ] as const;
 
+// A handful of real, Nawill-relevant starter articles so the Knowledge Base isn't
+// empty on a fresh seed. There's no admin authoring UI yet (see docs/QA.md §7) —
+// articles are managed here until that exists.
+const KNOWLEDGE_BASE = [
+  {
+    name: 'Getting Started',
+    slug: 'getting-started',
+    description: 'Onboarding, your dashboard, and how engagements work.',
+    icon: 'rocket',
+    articles: [
+      {
+        title: 'How Nawill engagements work',
+        slug: 'how-nawill-engagements-work',
+        body: 'After signup, our team reviews your project brief and assigns an owner. You can track project phase, invoices, and support tickets from your dashboard at any time.',
+      },
+      {
+        title: 'Understanding project phases',
+        slug: 'understanding-project-phases',
+        body: 'Projects move through four phases: pre_project (scoping), ongoing (active build), post_project (delivered), and maintenance (ongoing support). You can see the current phase on any project\'s detail page.',
+      },
+    ],
+  },
+  {
+    name: 'Billing & Payments',
+    slug: 'billing-payments',
+    description: 'Invoices, wallet funding, and payment methods.',
+    icon: 'credit-card',
+    articles: [
+      {
+        title: 'How to fund your wallet',
+        slug: 'how-to-fund-your-wallet',
+        body: 'Go to Billing > Add Funds, enter an amount, and complete payment via the link provided. Your wallet balance updates automatically once payment is confirmed.',
+      },
+      {
+        title: 'Paying an invoice',
+        slug: 'paying-an-invoice',
+        body: 'Open an invoice from Billing > Invoices and choose to pay from your wallet balance or via a payment link. You can download any invoice as a PDF at any time.',
+      },
+      {
+        title: 'Understanding discounts and VAT on your invoice',
+        slug: 'discounts-and-vat-on-your-invoice',
+        body: 'Some invoices include a discount, applied before VAT, and/or VAT calculated on the discounted amount. Both are itemized separately from the line items on your invoice PDF.',
+      },
+    ],
+  },
+  {
+    name: 'Account & Security',
+    slug: 'account-security',
+    description: 'Password, two-factor authentication, and email verification.',
+    icon: 'shield',
+    articles: [
+      {
+        title: 'Setting up two-factor authentication',
+        slug: 'setting-up-two-factor-authentication',
+        body: 'Go to Settings > Security and choose authenticator app or email codes. Once enabled, you\'ll be asked for a code at every login.',
+      },
+      {
+        title: 'Verifying your email address',
+        slug: 'verifying-your-email-address',
+        body: 'Check your inbox for a verification email sent at signup. If you can\'t find it, use the "Resend verification email" banner on your dashboard.',
+      },
+    ],
+  },
+  {
+    name: 'Support Tickets',
+    slug: 'support-tickets',
+    description: 'Raising, tracking, and closing support tickets.',
+    icon: 'ticket',
+    articles: [
+      {
+        title: 'Raising a support ticket',
+        slug: 'raising-a-support-ticket',
+        body: 'Go to Support > Tickets > New ticket, choose a type and priority, and describe your issue. Our team replies directly on the ticket.',
+      },
+      {
+        title: 'Closing your own ticket',
+        slug: 'closing-your-own-ticket',
+        body: 'If your issue is resolved, open the ticket and select "Close ticket." You can always raise a new one if the issue comes back.',
+      },
+    ],
+  },
+] as const;
+
 const SEED_DATA_DIR = join(__dirname, 'seed-data');
 
 interface CountrySeed {
@@ -101,6 +184,25 @@ async function seedTicketTypes() {
 async function seedServices() {
   for (const s of SERVICES) {
     await prisma.service.upsert({ where: { name: s.name }, update: s, create: s });
+  }
+}
+
+async function seedKnowledgeBase() {
+  for (const category of KNOWLEDGE_BASE) {
+    const { articles, ...categoryData } = category;
+    const savedCategory = await prisma.knowledgeBaseCategory.upsert({
+      where: { slug: categoryData.slug },
+      update: categoryData,
+      create: categoryData,
+    });
+
+    for (const article of articles) {
+      await prisma.knowledgeBaseArticle.upsert({
+        where: { slug: article.slug },
+        update: { ...article, categoryId: savedCategory.id },
+        create: { ...article, categoryId: savedCategory.id },
+      });
+    }
   }
 }
 
@@ -212,6 +314,7 @@ async function main() {
   await seedPermissions();
   await seedTicketTypes();
   await seedServices();
+  await seedKnowledgeBase();
   await seedMockProcessor();
   await seedSuperAdmin();
 

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ProjectsService } from './projects.service';
 import { CreateProjectDto } from './dto/create-project.dto';
@@ -38,5 +38,13 @@ export class ProjectsController {
   async update(@Param('id') id: string, @Body() dto: UpdateProjectDto) {
     const result = await this.projectsService.update(id, dto);
     return ok(result, 'Project updated successfully');
+  }
+
+  @Roles('staff', 'admin')
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  async remove(@Param('id') id: string) {
+    await this.projectsService.remove(id);
+    return ok(null, 'Project removed successfully');
   }
 }

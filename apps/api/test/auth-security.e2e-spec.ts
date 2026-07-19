@@ -34,7 +34,7 @@ describe('Auth security — lockout, password reset, 2FA (e2e)', () => {
   async function signup(email: string, password = STRONG_PASSWORD) {
     return request(app.getHttpServer())
       .post('/api/v1/auth/signup')
-      .send({ name: 'Test User', email, password, clientType: 'individual' })
+      .send({ name: 'Test User', email, password, confirmPassword: password, clientType: 'individual' })
       .expect(201);
   }
 
@@ -42,11 +42,33 @@ describe('Auth security — lockout, password reset, 2FA (e2e)', () => {
     it('rejects a weak password on signup', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/v1/auth/signup')
-        .send({ name: 'Weak Pw', email: 'weak@example.com', password: 'password', clientType: 'individual' })
+        .send({
+          name: 'Weak Pw',
+          email: 'weak@example.com',
+          password: 'password',
+          confirmPassword: 'password',
+          clientType: 'individual',
+        })
         .expect(400);
 
       expect(res.body.errorCode).toBe('VALIDATION_ERROR');
       expect(res.body.errors.some((e: { field: string }) => e.field === 'password')).toBe(true);
+    });
+
+    it('rejects signup when confirmPassword does not match password', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/auth/signup')
+        .send({
+          name: 'Mismatch',
+          email: 'mismatch@example.com',
+          password: STRONG_PASSWORD,
+          confirmPassword: 'Different-Horse9!',
+          clientType: 'individual',
+        })
+        .expect(400);
+
+      expect(res.body.errorCode).toBe('VALIDATION_ERROR');
+      expect(res.body.errors.some((e: { field: string }) => e.field === 'confirmPassword')).toBe(true);
     });
 
     it('accepts a password with upper, lower, number, and a special character', async () => {
@@ -118,7 +140,7 @@ describe('Auth security — lockout, password reset, 2FA (e2e)', () => {
 
       const sent = mailbox.getLastFor(email);
       expect(sent).toBeDefined();
-      const token = sent!.body.match(/Reset token: (\S+)/)?.[1];
+      const token = sent!.body.match(/token=(\S+)/)?.[1];
       expect(token).toBeTruthy();
 
       const newPassword = 'Brand-New9!';
@@ -174,6 +196,65 @@ describe('Auth security — lockout, password reset, 2FA (e2e)', () => {
     });
   });
 
+  describe('email verification', () => {
+    it('sends a verification email on signup and confirms it via the token', async () => {
+      const email = 'verify-flow@example.com';
+      await signup(email);
+
+      const sent = mailbox.getLastFor(email);
+      expect(sent).toBeDefined();
+      expect(sent!.subject).toBe('Verify your Nawill email');
+      const token = sent!.body.match(/token=(\S+)/)?.[1];
+      expect(token).toBeTruthy();
+
+      const user = await prisma.user.findFirstOrThrow({ where: { email } });
+      expect(user.emailVerifiedAt).toBeNull();
+
+      await request(app.getHttpServer()).post('/api/v1/auth/verify-email').send({ token }).expect(200);
+
+      const verified = await prisma.user.findFirstOrThrow({ where: { email } });
+      expect(verified.emailVerifiedAt).not.toBeNull();
+    });
+
+    it('rejects an unknown or already-used verification token', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-email')
+        .send({ token: 'not-a-real-token' })
+        .expect(401);
+    });
+
+    it('resends a verification email for an authenticated, unverified user', async () => {
+      const email = 'resend-flow@example.com';
+      const signupRes = await signup(email);
+      const accessToken = signupRes.body.data.accessToken as string;
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/auth/resend-verification')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(res.body.data.message).toBe('Verification email sent');
+      const sent = mailbox.getLastFor(email);
+      expect(sent!.subject).toBe('Verify your Nawill email');
+    });
+
+    it('does not resend once the email is already verified', async () => {
+      const email = 'already-verified@example.com';
+      const signupRes = await signup(email);
+      const accessToken = signupRes.body.data.accessToken as string;
+
+      const token = mailbox.getLastFor(email)!.body.match(/token=(\S+)/)?.[1];
+      await request(app.getHttpServer()).post('/api/v1/auth/verify-email').send({ token }).expect(200);
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/auth/resend-verification')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(res.body.data.message).toBe('Email is already verified');
+    });
+  });
+
   describe('two-factor authentication', () => {
     it('enables authenticator-app 2FA and requires a valid TOTP code to complete login', async () => {
       const email = 'totp-flow@example.com';
@@ -221,7 +302,7 @@ describe('Auth security — lockout, password reset, 2FA (e2e)', () => {
         .post('/api/v1/auth/2fa/email/request-code')
         .set('Authorization', `Bearer ${accessToken}`)
         .expect(200);
-      const setupCode = mailbox.getLastFor(email)!.body.match(/code is (\d{6})/)?.[1];
+      const setupCode = mailbox.getLastFor(email)!.body.match(/Code: (\d{6})/)?.[1];
       expect(setupCode).toBeTruthy();
 
       await request(app.getHttpServer())
@@ -237,7 +318,7 @@ describe('Auth security — lockout, password reset, 2FA (e2e)', () => {
       expect(loginRes.body.data.requiresTwoFactor).toBe(true);
       expect(loginRes.body.data.method).toBe('email');
 
-      const loginCode = mailbox.getLastFor(email)!.body.match(/code is (\d{6})/)?.[1];
+      const loginCode = mailbox.getLastFor(email)!.body.match(/Code: (\d{6})/)?.[1];
       expect(loginCode).toBeTruthy();
       expect(loginCode).not.toBe(setupCode);
 

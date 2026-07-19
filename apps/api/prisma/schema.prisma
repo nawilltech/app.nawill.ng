@@ -648,12 +648,16 @@ model Invoice {
   issuedBy       String
   issuer         User          @relation("InvoiceIssuer", fields: [issuedBy], references: [id])
   currency       String
-  subtotalMinor  BigInt
-  taxMinor       BigInt        @default(0)
-  totalMinor     BigInt
+  subtotalMinor  BigInt // sum of non-cancelled item amounts, before discount/VAT
+  discountMinor  BigInt        @default(0) // flat amount subtracted from subtotalMinor before VAT
+  vatEnabled     Boolean       @default(false)
+  vatRate        Float? // percentage (e.g. 7.5) — set only when vatEnabled; kept even if the org-wide rate later changes
+  taxMinor       BigInt        @default(0) // computed VAT amount — 0 when vatEnabled is false
+  totalMinor     BigInt // (subtotalMinor - discountMinor) + taxMinor
   invoiceStatus  InvoiceStatus @default(draft)
   dueDate        DateTime
   paidAt         DateTime?
+  notes          String?
 
   items               InvoiceItem[]
   payments            Payment[]
@@ -675,8 +679,13 @@ model InvoiceItem {
   serviceId         String?
   service           Service? @relation(fields: [serviceId], references: [id])
   itemName          String
+  // Free-text billing period shown on the invoice/receipt PDF, e.g. "Jul 2026 – Jul 2027", "1 Year", "One-off".
+  period            String?
   quantity          Int
   unitAmountMinor   BigInt
+  // True when the line was waived after invoicing — actualAmountMinor is forced to 0 but unitAmountMinor is
+  // kept so the PDF can show it struck through.
+  isCancelled       Boolean  @default(false)
   actualAmountMinor BigInt
 
   @@map("invoice_items")
@@ -882,6 +891,40 @@ model TicketMessage {
   isInternalNote   Boolean       @default(false)
 
   @@map("ticket_messages")
+}
+
+model KnowledgeBaseCategory {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  name        String  @unique
+  slug        String  @unique
+  description String?
+  // Key into a small fixed icon set rendered client-side (apps/web) — not a file upload.
+  icon        String?
+
+  articles KnowledgeBaseArticle[]
+
+  @@map("knowledge_base_categories")
+}
+
+model KnowledgeBaseArticle {
+  id        String    @id @default(uuid())
+  status    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  categoryId String
+  category   KnowledgeBaseCategory @relation(fields: [categoryId], references: [id])
+  title      String
+  slug       String                @unique
+  body       String // plain text/markdown, rendered as-is by the client
+
+  @@map("knowledge_base_articles")
 }
 
 // ── Audit ────────────────────────────────────────────────────────────────

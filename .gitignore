@@ -8,3 +8,4 @@ tools/adminer/
 coverage/
 .turbo/
 .DS_Store
+.claude/

@@ -24,7 +24,7 @@ Companion docs: [PRD](./PRD.md) · [Technical Docs & Flow Diagrams](./TECHNICAL.
 | **Logging** | Pino (`nestjs-pino`) | |
 | **Health** | `@nestjs/terminus` | |
 | **Errors** | Sentry | Not wired up in this build — unhandled exceptions are still logged via Pino, just not shipped anywhere |
-| **Email** | Resend or Zoho SMTP (adapter pattern) | **This build:** no provider configured — password resets and 2FA codes go through an in-memory `DevMailboxService` instead (§7.7) |
+| **Email** | Gmail SMTP via `nodemailer` (`MailService`) | **This build:** real delivery when `GMAIL_USER`/`GMAIL_APP_PASSWORD` are set; falls back to the in-memory `DevMailboxService` with zero code changes otherwise (§7.7) |
 | **Files** | S3-compatible object storage; `sharp` for images | Not built in this pass — KYC documents are metadata-only records (§7.3 note) |
 | **Testing** | Jest (unit) + Supertest (e2e) against a real local Postgres + Redis (created/flushed per run) | See [QA.md](./QA.md) for the full disposable-DB/Redis strategy — Testcontainers noted there as the eventual CI-portable option |
 | **Deployment** | Docker (multi-stage `apps/api/Dockerfile`) + `docker-compose.yml` (api + postgres + redis) at the repo root, modeled on the working pattern in the `spending-advisor` project | `docker compose up` gives a self-contained stack (migrate → seed → serve, see the Dockerfile `CMD`); local dev still runs against directly-installed Postgres/Redis, not compose — see [§9](#9-environment-setup-dev--prod) |
@@ -76,7 +76,7 @@ apps/api/src/modules/
   ├── external-services/  # every outbound third-party call lives here (§7.8)
   ├── analytics/          # customer-facing overview aggregation (+ admin analytics reads)
   ├── support/            # tickets, messages, ticket types
-  ├── notifications/      # dev mailbox now; real email/SMS/WhatsApp adapter later
+  ├── notifications/      # MailService (Gmail SMTP) + DevMailboxService fallback; SMS/WhatsApp adapter later
   ├── redis/              # RedisService (ioredis), global module
   ├── prisma/             # PrismaService, global module
   └── health/             # terminus health indicators
@@ -343,13 +343,19 @@ Seed: Build — Website, Web App, Mobile App, API/Backend; Consult — Product V
 | `projectId` | UUID FK NULL | |
 | `issuedBy` | UUID FK → users | staff |
 | `currency` | CHAR(3) | NGN or USD (single currency per invoice; matches website budget options) |
-| `subtotalMinor` / `taxMinor` / `totalMinor` | BIGINT | computed from items; minor units (kobo / cents) |
+| `subtotalMinor` | BIGINT | sum of non-cancelled item amounts, before discount/VAT |
+| `discountMinor` | BIGINT | default `0`; flat amount subtracted from `subtotalMinor` before VAT — rejected (400) if it exceeds `subtotalMinor` |
+| `vatEnabled` | BOOLEAN | default `false`; admin toggles per invoice at creation |
+| `vatRate` | FLOAT NULL | percentage (e.g. `7.5`); set only when `vatEnabled`, kept for audit even if the org-wide rate later changes |
+| `taxMinor` | BIGINT | default `0`; computed VAT amount — `0` whenever `vatEnabled` is false, regardless of `vatRate` |
+| `totalMinor` | BIGINT | `(subtotalMinor − discountMinor) + taxMinor` |
 | `invoiceStatus` | ENUM(draft,pending,partially_paid,paid,cancelled,overdue) | default `draft` |
 | `dueDate` | DATE | |
 | `paidAt` | TIMESTAMPTZ NULL | |
+| `notes` | TEXT NULL | freeform, shown on the invoice/receipt PDF (§8.5) |
 
 **invoice_items**
-`invoiceId` FK | `serviceId` FK NULL | `itemName` VARCHAR(160) | `quantity` INT | `unitAmountMinor` BIGINT | `actualAmountMinor` BIGINT (quantity × unit, after discounts)
+`invoiceId` FK | `serviceId` FK NULL | `itemName` VARCHAR(160) | `period` VARCHAR NULL (freeform billing period, e.g. "1 Year", "One-off" — shown on the PDF) | `quantity` INT | `unitAmountMinor` BIGINT | `isCancelled` BOOLEAN default false (waives the line — see below) | `actualAmountMinor` BIGINT (quantity × unit, after discounts; forced to 0 when `isCancelled`, but `unitAmountMinor` is kept so the PDF can show the original amount struck through)
 
 **payment_processors** (admin-onboarded)
 `name` VARCHAR(60) (paystack,flutterwave,interswitch,remita,**mock** — sandbox adapter used until live keys are onboarded, see [Technical doc §3.1](./TECHNICAL.md#31-payments--wallet-idempotency-webhooks-reconciliation-requery)) | `isDefault` BOOLEAN | `configEncrypted` JSONB (keys encrypted at rest) | `processorStatus` ENUM(active,disabled)
@@ -408,10 +414,16 @@ Seed: Build — Website, Web App, Mobile App, API/Backend; Consult — Product V
 `name` VARCHAR(60) UNIQUE | `description` TEXT NULL
 
 **support_tickets**
-`ticketNo` VARCHAR(30) UNIQUE | `ticketTypeId` FK | `raisedBy` FK → users | `assignedTo` FK → users NULL | `subject` VARCHAR(200) | `ticketStatus` ENUM(open,in_progress,awaiting_customer,resolved,closed) | `priority` ENUM(low,medium,high,urgent) | `resolvedAt` TIMESTAMPTZ NULL
+`ticketNo` VARCHAR(30) UNIQUE | `ticketTypeId` FK | `raisedBy` FK → users | `assignedTo` FK → users NULL | `subject` VARCHAR(200) | `ticketStatus` ENUM(open,in_progress,awaiting_customer,resolved,closed) | `priority` ENUM(low,medium,high,urgent) | `resolvedAt` TIMESTAMPTZ NULL. Two ways to reach `closed`: the staff-only `PATCH /support-tickets/:id` (can also set `assignedTo`/`priority`), or the self-service `POST /support-tickets/:id/close` (the ticket's own raiser, or staff/admin — `assertSelfOrStaff`, same guard as reading/replying to a ticket) which only ever sets `ticketStatus=closed` + `resolvedAt`.
 
 **ticket_messages**
 `ticketId` FK | `senderId` FK → users | `body` TEXT | `attachmentFileId` FK → files NULL | `isInternalNote` BOOLEAN default false
+
+**knowledge_base_categories**
+`name` VARCHAR UNIQUE | `slug` VARCHAR UNIQUE | `description` TEXT NULL | `icon` VARCHAR NULL (a key into a small fixed icon set rendered client-side — `components/kb-icon.tsx` — not a file upload)
+
+**knowledge_base_articles**
+`categoryId` FK | `title` VARCHAR | `slug` VARCHAR UNIQUE | `body` TEXT (plain text/markdown, rendered as-is). Read-only from the API's perspective in this build — articles are seeded (`prisma/seed.ts`, `seedKnowledgeBase()`) rather than authored through an admin UI, which doesn't exist yet (§QA.md §7).
 
 **files**
 `uploadedBy` FK → users | `purpose` ENUM(avatar,kyc,ticket_attachment,invoice_pdf,blog_image,other) | `originalName` VARCHAR(255) | `mimeType` VARCHAR(100) | `sizeBytes` BIGINT | `storageKey` TEXT (object-storage path) | `checksum` VARCHAR(64)
@@ -495,6 +507,7 @@ Requested explicitly: login lockout, password reset, and 2FA challenges should l
 | `auth:fail:{email}` | failed-attempt counter (`INCR`) | 15 min, reset on each new failure streak | failed login | login (lockout check) |
 | `auth:lock:{email}` | `"1"` | 15 min | 5th consecutive failed login | login (checked before password verification) |
 | `auth:reset:{token}` | `userId` | 30 min | `POST /auth/forgot-password` | `POST /auth/reset-password` |
+| `auth:verify-email:{token}` | `userId` | 24 hours | signup, `POST /auth/resend-verification` | `POST /auth/verify-email` |
 | `auth:totp-setup:{userId}` | pending TOTP secret (base32) | 10 min | `POST /auth/2fa/totp/setup` | `POST /auth/2fa/totp/enable` |
 | `auth:email-2fa-setup:{userId}` | hashed confirmation code | 5 min | `POST /auth/2fa/email/request-code` | `POST /auth/2fa/email/enable` |
 | `auth:2fa-challenge:{challengeToken}` | JSON `{userId, method, otpHash?}` | 5 min | `POST /auth/login` (when 2FA is on) | `POST /auth/2fa/verify` |
@@ -503,7 +516,9 @@ Notes:
 - **Lockout is checked before password verification** — a locked-out account gets `429 ACCOUNT_LOCKED` even with the correct password, which is the point (it stops both guessing *and* confirms-a-guess-was-right timing attacks).
 - **Login never returns tokens directly for a 2FA-enabled account.** It returns `{ requiresTwoFactor: true, method, challengeToken }`; tokens are only issued by `POST /auth/2fa/verify` once the second factor checks out. The challenge token is single-use — consumed (`DEL`) on success — and method-scoped: a `totp` challenge is verified against the user's persisted `twoFactorSecret` via `otplib`, an `email` challenge is verified against the challenge's own `otpHash`.
 - **Email OTPs are hashed at rest** (SHA-256) even in Redis — short TTL and a trusted internal store are defense in depth, not a reason to store codes in the clear.
-- **No email provider is wired up** (see tech stack table) — password-reset tokens and 2FA email codes are "sent" via an in-memory `DevMailboxService` (logged, and readable by tests the same way `MockPaymentProcessorAdapter` is) instead of Resend/SES/Zoho. Swapping in a real provider only touches that one service.
+- **Real email delivery via Gmail SMTP, alongside — not instead of — the dev mailbox.** `MailService` (`modules/notifications/mail.service.ts`) wraps `nodemailer`'s Gmail transport (`GMAIL_USER` + `GMAIL_APP_PASSWORD`, an [App Password](https://myaccount.google.com/apppasswords), not the account password) and sits in front of `DevMailboxService`: every send is first recorded in the in-memory dev mailbox (so e2e tests keep reading `getLastFor` exactly as before `MailService` existed), then, only if Gmail credentials are configured, a real message is also sent. Unset the two env vars and every environment reverts to dev-mailbox-only with zero code changes — same config-gated shape as `PaystackAccountVerificationProvider` (§7.8). Gmail SMTP rejects a `From` address that isn't the authenticated account, so `MAIL_FROM` (a plain display name, e.g. "Nawill Technology Ltd") is combined into `"{MAIL_FROM} <{GMAIL_USER}>"` rather than sent as-is. **The e2e test suite force-clears both env vars in `test/setup/jest.setup-files.ts`** — dotenv never overrides a variable already present in `process.env`, so without that, a developer's real Gmail credentials sitting in their local `.env` would otherwise leak into every `signup()`-based test and trigger real SMTP calls.
+- **Email verification uses the same three-endpoint shape as password reset**: `POST /auth/signup` sends a `Verify your Nawill email` message containing a `{WEB_APP_URL}/verify-email?token=...` link (the web app's own page, not an API-rendered HTML page — this build already has a Next.js frontend to own that UX, unlike a bare-API reference implementation); `POST /auth/verify-email {token}` (public) sets `users.emailVerifiedAt`; `POST /auth/resend-verification` (authenticated) re-sends it, and is a no-op if already verified. Login does **not** block on `emailVerifiedAt` being unset — the dashboard shows a dismissible-by-completion banner instead (`components/email-verification-banner.tsx`) rather than locking unverified users out.
+- **Every transactional email shares one HTML template** (`modules/notifications/email-template.ts`, `renderEmailTemplate()`) instead of ad-hoc strings per call site — a navy header band, a heading, body copy, and either a direct call-to-action link (password reset, email verification — both point straight into the web app, not a raw token the user has to paste) or a styled OTP code display (the two 2FA email flows, which are code-entry, not link-based, by nature). `MailService.send()` takes `{ text, html }`; the plain-text version is what `DevMailboxService` records and what e2e tests pattern-match against. Deliberately **web-safe system fonts, not the brand's custom faces** — email client font support is unreliable enough that embedding IBM Plex/Special Elite risks broken rendering across clients; brand identity here comes through color (Ink navy, Cream) instead. See §8.8 for the full brand-token reference.
 - **`forgot-password` always returns the same generic message** regardless of whether the email exists, to avoid account enumeration.
 
 ### 7.8 External Services & Paystack Account Verification
@@ -553,17 +568,18 @@ Adding Ghana's regions/districts later is "drop `ghana-divisions.json` in that f
 
 ## 8. Frontend Architecture
 
-`apps/web` is now a **fully built client dashboard** — every client-facing API capability (§7) has a real form or action behind it, not just a read-only render. What follows describes the whole thing; §8.5 lists what's still deliberately out of scope (mainly: an admin UI, and automated frontend tests).
+`apps/web` is now a **fully built client + admin dashboard** — every client-facing API capability (§7) has a real form or action behind it, not just a read-only render. What follows describes the whole thing; §8.7 lists what's still deliberately out of scope (mainly automated frontend tests).
 
 ### 8.1 Route Structure
 
 ```
 apps/web/src/app/
-  page.tsx                      # public landing ("/")
+  page.tsx                      # public landing ("/") — real marketing copy + login/signup CTAs
   login/page.tsx                 # two-step: credentials, then a 2FA code if required
-  signup/page.tsx
+  signup/page.tsx                # includes confirmPassword (client + backend DTO validated)
   forgot-password/page.tsx
   reset-password/page.tsx        # token from query param or pasted manually
+  verify-email/page.tsx          # token from query param; auto-submits, shows success/error
   api/auth/
     login/route.ts               # Route Handler: proxies to the API, sets cookies
     signup/route.ts               # same, for signup
@@ -571,22 +587,33 @@ apps/web/src/app/
     2fa-verify/route.ts           # completes a 2FA login challenge, sets cookies
     forgot-password/route.ts      # proxies, no cookies
     reset-password/route.ts       # proxies, no cookies
+    verify-email/route.ts         # proxies, no cookies (endpoint is public/tokenless auth)
   dashboard/
-    layout.tsx                    # server component: redirects to /login if unauthenticated
+    layout.tsx                    # server component: redirects to /login if unauthenticated;
+                                   # sidebar (grouped nav + "Billing"/"Support"/"Admin" headings),
+                                   # header user-avatar menu, unverified-email banner
     page.tsx                      # overview — GET /analytics/me/overview
-    projects/page.tsx             # GET /projects
-    projects/[id]/page.tsx        # GET /projects/:id
-    invoices/page.tsx             # GET /invoices
-    invoices/[id]/page.tsx        # GET /invoices/:id + pay-with-wallet / pay-with-processor
+    projects/page.tsx             # GET /projects; staff/admin get an inline "New project" form
+    projects/[id]/page.tsx        # GET /projects/:id; staff/admin get inline edit + delete
+    invoices/page.tsx             # GET /invoices; staff/admin get an inline "New invoice" form
+    invoices/[id]/page.tsx        # GET /invoices/:id + pay actions; staff/admin get inline edit;
+                                   # "Download invoice/receipt (PDF)" button for every viewer (§8.6)
     wallet/page.tsx                # balance + transactions + fund form
-    support/page.tsx               # ticket list
-    support/new/page.tsx           # create ticket
-    support/[id]/page.tsx          # ticket detail + reply
+    support/page.tsx               # ticket list (staff/admin see every org's tickets)
+    support/new/page.tsx           # create ticket — subject + first message in one call
+    support/[id]/page.tsx          # ticket detail + reply + self-service "Close ticket"
+    support/knowledge-base/page.tsx                       # category cards + client-side search
+    support/knowledge-base/[slug]/page.tsx                # articles within a category
+    support/knowledge-base/[slug]/[articleSlug]/page.tsx  # article body
     organization/page.tsx          # org details + KYC document submission
     settings/page.tsx              # profile, password, 2FA, bank accounts
+    admin/                         # admin-only — layout.tsx redirects non-admins to /dashboard
+      page.tsx                     # console home — links to the sections below
+      users/page.tsx                # list all users
+      users/[id]/page.tsx           # userType/status edit + role assign/revoke
+      organizations/page.tsx        # list all organizations
+      health/page.tsx               # renders GET /health
 ```
-
-No `/admin` surface — everything built is the client-facing dashboard; an admin UI (project/invoice creation, ticket management, KYC review, staff management) is a separate, not-yet-started scope, since every one of those is a staff/admin-only API capability with no corresponding client-role user story.
 
 ### 8.2 Auth: Why a Proxy, Not a Direct Browser Call
 
@@ -610,7 +637,7 @@ Both are server-only (rely on `next/headers` cookies) and both throw a typed `Ap
 
 ### 8.4 Mutations: Server Actions, One Pattern Everywhere
 
-Every write in the app — fund wallet, pay an invoice (either way), add/verify/default/remove a bank account, create a ticket, reply to one, update profile, change password, update the organization, submit a KYC document, set up/confirm/disable 2FA — is a **Next.js Server Action** in `lib/actions/*.ts`, not a client-side `fetch` to a hand-rolled API route. One file per domain, mirroring the API's own module boundaries (`lib/actions/wallet.ts`, `invoices.ts`, `bank-accounts.ts`, `support.ts`, `profile.ts`, `organization.ts`, `two-factor.ts`).
+Every write in the app — fund wallet, pay an invoice (either way), add/verify/default/remove a bank account, create a ticket (with its opening message), reply to one, update profile, change password, resend a verification email, update the organization, submit a KYC document, set up/confirm/disable 2FA, and (staff/admin) create/update/delete a project, create/update an invoice, update a user's role/status, assign/revoke a role — is a **Next.js Server Action** in `lib/actions/*.ts`, not a client-side `fetch` to a hand-rolled API route. One file per domain, mirroring the API's own module boundaries (`lib/actions/wallet.ts`, `invoices.ts`, `bank-accounts.ts`, `support.ts`, `profile.ts`, `organization.ts`, `two-factor.ts`, `admin.ts`).
 
 Every action returns the same shape (`lib/action-result.ts`):
 
@@ -628,14 +655,57 @@ interface ActionResult {
 
 **This is verified working end-to-end, not just code-reviewed.** Next.js Server Actions are invoked over HTTP via a `Next-Action`-style protocol (hidden form fields carrying an action reference + bound args) that's normally only exercised by the browser's JS runtime. During this build, that protocol was replicated directly with `curl` — extracting the real hidden-field values from a rendered page and POSTing multipart form data — for four representative flows: `fundWallet` (initiates a real payment, returns a real mock-processor link), `payInvoiceWithWallet` (a seeded invoice went from `pending` to `paid` and the wallet balance decremented by exactly the invoice total, both confirmed via direct Prisma/API checks), `updateProfile` (the new name/phone persisted, confirmed via `GET /users/me`), and `createSupportTicket` (a real `303` redirect to the new ticket's URL, ticket confirmed to exist via the API). Every other action follows the identical pattern against an already-verified API endpoint, so this wasn't repeated for all ~15, but the mechanism itself — cookie auth flowing through a Server Action into the API and back — is proven, not assumed.
 
-### 8.5 What's Deliberately Not Built
+### 8.5 Admin Console (`/dashboard/admin`)
 
-- **No admin UI** — staff/admin-only capabilities (project/invoice creation, ticket assignment, KYC review, staff management, wallet adjustments) have no interface. Every one of them is exercised by the API's own e2e suite (`docs/QA.md`), just not from a browser.
+Staff/admin capabilities live in two places, deliberately not one giant separate app:
+
+- **Admin-only routes** under `/dashboard/admin/*` — `users` (list, role assign/revoke via `roles.controller.ts`, activate/deactivate), `organizations` (list-all), `health` (renders `GET /health`). Gated by `dashboard/admin/layout.tsx`, which redirects any non-`admin` `userType` back to `/dashboard` — the API independently enforces the same boundary via `@Roles('admin')`, so the layout check is a UX nicety, not the security boundary.
+- **Inline staff/admin controls on the existing client-facing pages** — `/dashboard/projects` (create form + per-project delete), `/dashboard/invoices` (create form + per-invoice edit) render an extra `Card` with a form when `getCurrentUser().userType` is `staff`/`admin`, rather than duplicating those pages under `/admin`. This follows the same DRY instinct as the API's own `assertOrgAccess`/`isStaffOrAdmin` helpers (§4) — one page, role-aware rendering, not two pages.
+- **The invoice creation form** (`components/admin/new-invoice-form.tsx`) supports an arbitrary number of line items (add/remove rows, all client-side state serialized to one hidden JSON field on submit — not indexed `FormData` keys, which would be fragile to reorder/remove), a flat discount amount, and a VAT toggle + rate, with a live-computed subtotal/discount/VAT/total preview that mirrors the API's own calculation (§7.3) so the number shown before submit matches what gets persisted.
+- **Every primary create/action form has a Cancel control** (`FundWalletForm`, `NewTicketForm`, `NewProjectForm`, `NewInvoiceForm`) — a plain `type="reset"` for inline forms, a link back to the list for full-page forms like ticket creation.
+
+The nav (`dashboard/layout.tsx`) and the header user menu (`components/user-menu.tsx`) both add an "Admin" entry only for `userType === 'admin'`.
+
+### 8.6 Invoice PDF Generation
+
+Invoices (and, by re-use, receipts — see below) render to a real PDF file, not an HTML print view, generated **client-side, on click, from the same JSON `GET /invoices/:id` already returns** — no server-side rendering step, no Puppeteer/headless-Chrome dependency, no third-party reporting engine (Stimulsoft was explicitly ruled out as overkill for one document type).
+
+- **Library**: [`@react-pdf/renderer`](https://react-pdf.org) — React components (`Document`/`Page`/`View`/`Text`) compiled to a real PDF buffer in-browser via `pdf(<Doc/>).toBlob()`. No headless browser, no wasm-heavy layout engine, keeps the API stateless.
+- **Template**: `lib/pdf/invoice-document.tsx`, styled to match a set of reference invoice PDFs originally supplied for this build (not kept in the repo — navy header band, periwinkle table header with alternating cream-tinted row shading, a green `BALANCE DUE` bar and rotated "PAID IN FULL" stamp when `invoiceStatus === 'paid'`, a red bar otherwise). Static company facts (address, phone, the bank account invoices ask clients to pay into) live in `lib/pdf/nawill-brand.ts` — one file to update if any of that changes.
+- **Fonts**: IBM Plex Sans (variable, weight-instanced via `fontkit`), IBM Plex Mono (static per-weight), and Special Elite for the company-name header — self-hosted as static `.ttf` files under `public/fonts/` (downloaded once from Google Fonts / IBM's font repo, not fetched at render time) and registered via `Font.register()` at the top of `invoice-document.tsx`. Live-rendered and visually confirmed outside the browser (Node + `@react-pdf/renderer`'s isomorphic `pdf()`) during development — including that the variable Plex Sans file correctly resolves distinct 400/700 weight instances, which isn't guaranteed for every variable-font consumer.
+- **Trigger**: `components/invoice-download-button.tsx`, a client component on `/dashboard/invoices/[id]`. Both the PDF library and the template are dynamically `import()`ed inside the click handler, so neither ships in the page's initial JS bundle.
+- **Receipts are not a separate template.** Per explicit product direction, a paid invoice *is* the receipt — the same document renders the "PAID IN FULL" stamp and an ₦0.00 balance instead of a distinct receipt layout.
+- **`amountPaidMinor`** is derived in the template, not stored: `invoiceStatus === 'paid' ? totalMinor : 0`. The system has no partial-payment code path today (`payInvoiceWithWallet`/`payInvoiceWithProcessor` both settle the full total in one shot), so this simple rule is exactly correct for the current implementation — it will need revisiting if partial payments are ever built.
+- **Cancelled line items** (`InvoiceItem.isCancelled`, §7.3) render with the original `unitAmountMinor` struck through next to `₦0.00`, matching the reference PDF's "Logo, Images and Contents … cancelled" row.
+
+### 8.7 What's Deliberately Not Built
+
 - **No token refresh loop** — an expired access token surfaces as a failed fetch (inline error on the page), not a silent refresh-and-retry or a forced redirect to `/login`.
 - **No project milestones/change-history/status-requests UI** — matches the API, which doesn't expose them yet either (`docs/PRD.md §4.1`).
 - **No real file upload** — the KYC document form takes a `fileId` as a text reference, matching the API's own metadata-only design (`docs/QA.md §7`).
 - **No automated frontend tests** — see `docs/QA.md §7` for exactly what was manually/`curl`-verified instead, and why a Playwright/RTL suite wasn't added yet.
-- **Styling is intentionally plain** — Tailwind utility classes and a small set of shared primitives (`components/ui/*`), no component library, no design tokens beyond one brand color.
+- **Ticket assignment and KYC review have no admin UI yet** — both are staff/admin-only API capabilities (`PATCH /support-tickets/:id`, `PATCH /kyc-documents/:id`) exercised by the API's own e2e suite, just not from a browser.
+- **No admin authoring UI for the Knowledge Base** — see QA.md §7; content is seed-managed for now.
+
+### 8.8 Brand System
+
+The canonical source was a one-page brand identity PDF and a design-tool bundle export, both supplied for this build and not kept in the repo. This superseded an earlier, incorrect palette that had been scraped from nawill.ng's own (out of date) CSS. Not invented values, with two documented exceptions noted below.
+
+| Token | Hex | Official name | Used for |
+|---|---|---|---|
+| `brand` | `#20264a` | Ink | Primary — nav, headings, CTAs |
+| `brand.dark` | `#161a34` | *(computed)* | Hover/active shade of `brand` — the guide shows no explicit hover value |
+| `brand.mid` | `#4757b8` | Nawill Blue | Interactive accents, table headers, secondary buttons |
+| `brand.link` | `#29335c` | *(unnamed in guide)* | Default (non-hover) inline link color |
+| `brand.light` | `#8e9bd8` | *(unnamed)* | Text/accents on navy backgrounds |
+| `brand.border` | `#3a4270` | *(unnamed)* | Borders/dividers on navy backgrounds |
+| `brand.100` | `#f4eedd` | Cream | Logo-mark tiles, light pill/badge backgrounds |
+| `gold.light` (≈ `brand.50` role) | `#e4dcc8` | Paper | Section background tint |
+| `gold` | `#7a7256` | *(unnamed, "olive")* | Secondary labels/emphasis |
+
+Fonts — **Special Elite** (display/wordmark; used for the logotype "N" mark and the company name, not general headings), **IBM Plex Sans** (body copy and correspondence — mapped to both `font-sans` and `font-heading`, since the guide doesn't call for a distinct heading face), **IBM Plex Mono** (IDs, data, labels, serials — used for eyebrow text, invoice line-item labels, and technical detail throughout). All three loaded via `next/font/google` on the website (`app/layout.tsx`) and self-hosted as static `.ttf` under `public/fonts/` for the invoice PDF (§8.6), which needs actual font bytes rather than a CSS `@font-face` link.
+
+**Logo assets** (`public/logo.png`, `public/logo-mark.png`) are generated, not hand-drawn — built once via Next.js's `ImageResponse` (`next/dist/compiled/@vercel/og`, the same engine behind `app/icon.tsx`) from the guide's lockup: a rounded navy tile with the "N" in Special Elite, plus "NAWILL" in tracked bold IBM Plex Mono for the horizontal wordmark. IBM Plex Sans could not be used for this specific generation step — Satori (the JSX→SVG engine `@vercel/og` uses) failed to parse the upstream variable font's `fvar` table, a different font engine than `@react-pdf/renderer`'s `fontkit`, which handles that same file correctly (§8.6) — so Plex Mono Bold, a genuinely static file, was used instead for this one asset. The favicon (`app/icon.tsx`) follows the guide's dedicated "Icon / Favicon" spec exactly: navy canvas, a `#3a4270` rounded tile, the "N" in Special Elite, cream-colored.
 
 ---
 

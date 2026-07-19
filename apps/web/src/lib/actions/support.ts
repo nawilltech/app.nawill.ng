@@ -18,6 +18,7 @@ export async function createSupportTicket(_prev: ActionResult, formData: FormDat
         ticketTypeId: formData.get('ticketTypeId'),
         subject: formData.get('subject'),
         priority: formData.get('priority') || undefined,
+        message: formData.get('message'),
       },
     });
   } catch (e) {
@@ -36,6 +37,18 @@ export async function addTicketMessage(_prev: ActionResult, formData: FormData):
     });
     revalidatePath(`/dashboard/support/${ticketId}`);
     return { ok: true };
+  } catch (e) {
+    return actionErrorFrom(e);
+  }
+}
+
+export async function closeTicket(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
+  const ticketId = String(formData.get('ticketId'));
+  try {
+    await apiFetch(`/support-tickets/${ticketId}/close`, { method: 'POST' });
+    revalidatePath(`/dashboard/support/${ticketId}`);
+    revalidatePath('/dashboard/support');
+    return { ok: true, message: 'Ticket closed' };
   } catch (e) {
     return actionErrorFrom(e);
   }

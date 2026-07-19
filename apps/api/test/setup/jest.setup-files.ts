@@ -17,3 +17,10 @@ process.env.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'test-refresh
 process.env.JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
 process.env.MOCK_PROCESSOR_WEBHOOK_SECRET =
   process.env.MOCK_PROCESSOR_WEBHOOK_SECRET || 'test-mock-processor-secret';
+
+// Force-disabled, not defaulted — dotenv never overrides a var already present in
+// process.env, so without this a developer's real Gmail credentials in .env would
+// leak into e2e runs and every signup()-based test would attempt a real SMTP send.
+// MailService.send() falls back to DevMailboxService-only whenever these are unset.
+process.env.GMAIL_USER = '';
+process.env.GMAIL_APP_PASSWORD = '';
