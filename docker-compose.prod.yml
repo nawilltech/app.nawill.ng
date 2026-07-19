@@ -1,0 +1,41 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: nawill-api
+    restart: unless-stopped
+    # apps/api/.env supplies everything (DATABASE_URL/REDIS_URL point at the
+    # shared postgres/redis containers already running on nawill-net, JWT
+    # secrets, Swagger creds, ...) — see /opt/apps/app.nawill.ng/.secrets on
+    # the host for how DATABASE_URL's password was generated.
+    env_file:
+      - apps/api/.env
+    networks:
+      - nawill-net
+    mem_limit: 400m
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Server-only (see apps/web/src/lib/api.ts) — the browser never calls
+        # this directly, so the internal container hostname is correct here,
+        # same as the runtime override below.
+        NAWILL_API_URL: http://nawill-api:3000/api/v1
+    container_name: nawill-web
+    restart: unless-stopped
+    env_file:
+      - apps/web/.env.local
+    environment:
+      NAWILL_API_URL: http://nawill-api:3000/api/v1
+    networks:
+      - nawill-net
+    depends_on:
+      - api
+    mem_limit: 300m
+
+networks:
+  nawill-net:
+    external: true
