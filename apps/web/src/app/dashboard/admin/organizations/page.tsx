@@ -37,7 +37,8 @@ export default async function AdminOrganizationsPage() {
       {!error && items.length === 0 && <p className="text-sm text-neutral-500">No organizations yet.</p>}
 
       {items.length > 0 && (
-        <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-sm">
           <thead className="text-neutral-500">
             <tr>
               <th className="pb-2 font-medium">Name</th>
@@ -63,6 +64,7 @@ export default async function AdminOrganizationsPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

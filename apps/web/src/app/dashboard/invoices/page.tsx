@@ -58,7 +58,8 @@ export default async function InvoicesPage() {
       {!error && items.length === 0 && <p className="text-sm text-neutral-500">No invoices yet.</p>}
 
       {items.length > 0 && (
-        <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-sm">
           <thead className="text-neutral-500">
             <tr>
               <th className="pb-2 font-medium">Invoice #</th>
@@ -84,6 +85,7 @@ export default async function InvoicesPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

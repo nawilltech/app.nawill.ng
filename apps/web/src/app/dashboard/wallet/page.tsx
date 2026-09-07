@@ -58,7 +58,8 @@ export default async function WalletPage() {
       )}
 
       {transactions.length > 0 && (
-        <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-sm">
           <thead className="text-neutral-500">
             <tr>
               <th className="pb-2 font-medium">Date</th>
@@ -81,6 +82,7 @@ export default async function WalletPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
