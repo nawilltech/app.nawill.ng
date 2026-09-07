@@ -37,7 +37,8 @@ export default async function SupportPage() {
       {!error && items.length === 0 && <p className="text-sm text-neutral-500">No support tickets yet.</p>}
 
       {items.length > 0 && (
-        <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-sm">
           <thead className="text-neutral-500">
             <tr>
               <th className="pb-2 font-medium">Ticket</th>
@@ -65,6 +66,7 @@ export default async function SupportPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

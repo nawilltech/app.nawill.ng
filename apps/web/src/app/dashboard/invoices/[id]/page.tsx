@@ -78,7 +78,8 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
           </div>
 
           <Card>
-            <table className="w-full text-left text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[480px] text-left text-sm">
               <thead className="text-neutral-500">
                 <tr>
                   <th className="pb-2 font-medium">Item</th>
@@ -99,6 +100,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
                 ))}
               </tbody>
             </table>
+            </div>
             <div className="mt-4 flex flex-col items-end gap-1 text-sm">
               <p>
                 Subtotal: <span className="font-medium">{formatMinor(invoice.subtotalMinor, invoice.currency)}</span>
