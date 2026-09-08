@@ -54,6 +54,9 @@ jobs:
             ${{ secrets.WEB_ENV_FILE }}
             NAWILL_ENV_EOF
 
-            docker compose build
-            docker compose up -d
+            # docker-compose.prod.yml, not the default docker-compose.yml — this
+            # deploys onto a shared host with its own Postgres/Redis/Caddy already
+            # running on the external nawill-net network (see docs/TECHNICAL.md §8.3
+            # and deploy.sh, which this mirrors).
+            docker compose -f docker-compose.prod.yml up -d --build
             docker image prune -f
