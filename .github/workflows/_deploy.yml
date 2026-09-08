@@ -5,6 +5,9 @@ name: Deploy (reusable)
 on:
   workflow_call:
     inputs:
+      environment_name:
+        required: true
+        type: string
       branch:
         required: true
         type: string
@@ -24,9 +27,12 @@ on:
 
 jobs:
   deploy:
-    # Secret scoping (dev vs prod) happens one level up, via `environment:` on the
-    # caller job in deploy-dev.yml/deploy-prod.yml plus `secrets: inherit` — not here.
     runs-on: ubuntu-latest
+    # This `environment:` is what actually scopes secret access: with it set, GitHub
+    # resolves `secrets.*` below from the named Environment's own secret store — a
+    # value passed in by the caller's `secrets:` block is not used instead (the
+    # caller can't set `environment:` itself; `on.workflow_call` doesn't support it).
+    environment: ${{ inputs.environment_name }}
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
