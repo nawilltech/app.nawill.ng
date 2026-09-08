@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Patch, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { CurrentUser, AuthUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../rbac/roles.decorator';
 import { CursorPaginationDto } from '../../common/dto/pagination.dto';
@@ -30,5 +31,19 @@ export class UsersController {
   async listUsers(@Query() query: CursorPaginationDto) {
     const page = await this.usersService.listUsers(query);
     return paginatedFrom(page, query.limit, 'Users retrieved successfully');
+  }
+
+  @Roles('staff', 'admin')
+  @Get(':id')
+  async getUser(@Param('id') id: string) {
+    const result = await this.usersService.getUser(id);
+    return ok(result, 'User retrieved successfully');
+  }
+
+  @Roles('admin')
+  @Patch(':id')
+  async updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
+    const result = await this.usersService.updateUser(id, dto);
+    return ok(result, 'User updated successfully');
   }
 }

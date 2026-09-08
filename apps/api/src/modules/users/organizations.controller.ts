@@ -1,16 +1,25 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { CurrentUser, AuthUser } from '../../common/decorators/current-user.decorator';
 import { SubmitKycDocumentDto } from './dto/submit-kyc-document.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
-import { ok } from '../../common/dto/service-result';
+import { Roles } from '../rbac/roles.decorator';
+import { CursorPaginationDto } from '../../common/dto/pagination.dto';
+import { ok, paginatedFrom } from '../../common/dto/service-result';
 
 @ApiTags('organizations')
 @ApiBearerAuth('bearer')
 @Controller('organizations')
 export class OrganizationsController {
   constructor(private readonly usersService: UsersService) {}
+
+  @Roles('staff', 'admin')
+  @Get()
+  async listOrganizations(@Query() query: CursorPaginationDto) {
+    const page = await this.usersService.listOrganizations(query);
+    return paginatedFrom(page, query.limit, 'Organizations retrieved successfully');
+  }
 
   @Get(':id')
   async getOrganization(@Param('id') id: string, @CurrentUser() user: AuthUser) {

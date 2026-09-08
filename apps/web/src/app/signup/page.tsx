@@ -2,7 +2,11 @@
 
 import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import Link from 'next/link';
+import { Field, Input, Legend } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { ErrorAlert } from '@/components/ui/alert';
 
 type ClientType = 'individual' | 'corporate';
 
@@ -11,16 +15,25 @@ export default function SignupPage() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [clientType, setClientType] = useState<ClientType>('individual');
   const [organizationName, setOrganizationName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<{ field?: string; message: string }[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
+  const passwordMismatch = confirmPassword.length > 0 && password !== confirmPassword;
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setFieldErrors([]);
+
+    if (password !== confirmPassword) {
+      setError('Password and confirm password do not match');
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -31,6 +44,7 @@ export default function SignupPage() {
           name,
           email,
           password,
+          confirmPassword,
           clientType,
           ...(clientType === 'corporate' ? { organizationName } : {}),
         }),
@@ -53,7 +67,10 @@ export default function SignupPage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 px-6 py-12">
       <div>
-        <h1 className="text-2xl font-semibold">Create your account</h1>
+        <Link href="/" className="mb-6 inline-block">
+          <Image src="/logo.png" alt="Nawill" width={120} height={30} className="h-8 w-auto" />
+        </Link>
+        <h1 className="font-heading text-2xl font-semibold text-neutral-900">Create your account</h1>
         <p className="mt-1 text-sm text-neutral-600">
           Already have one?{' '}
           <Link href="/login" className="text-brand hover:underline">
@@ -63,43 +80,33 @@ export default function SignupPage() {
       </div>
 
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1 text-sm">
-          Full name
-          <input
-            required
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="rounded-md border border-neutral-300 px-3 py-2"
-          />
-        </label>
+        <Field label="Full name">
+          <Input required value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
 
-        <label className="flex flex-col gap-1 text-sm">
-          Email
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="rounded-md border border-neutral-300 px-3 py-2"
-          />
-        </label>
+        <Field label="Email">
+          <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
 
-        <label className="flex flex-col gap-1 text-sm">
-          Password
-          <input
+        <Field
+          label="Password"
+          hint="At least 8 characters, with uppercase, lowercase, a number, and a special character."
+        >
+          <Input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        </Field>
+
+        <Field label="Confirm password" hint={passwordMismatch ? 'Passwords do not match' : undefined}>
+          <Input
             type="password"
             required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="rounded-md border border-neutral-300 px-3 py-2"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            className={passwordMismatch ? 'border-red-400 focus:border-red-400 focus:ring-red-200' : ''}
           />
-          <span className="text-xs text-neutral-500">
-            At least 8 characters, with uppercase, lowercase, a number, and a special character.
-          </span>
-        </label>
+        </Field>
 
         <fieldset className="flex flex-col gap-2 text-sm">
-          <legend className="mb-1">I am a</legend>
+          <Legend>I am a</Legend>
           <label className="flex items-center gap-2">
             <input
               type="radio"
@@ -115,40 +122,24 @@ export default function SignupPage() {
         </fieldset>
 
         {clientType === 'corporate' && (
-          <label className="flex flex-col gap-1 text-sm">
-            Organization name
-            <input
-              required
-              value={organizationName}
-              onChange={(e) => setOrganizationName(e.target.value)}
-              className="rounded-md border border-neutral-300 px-3 py-2"
-            />
-          </label>
+          <Field label="Organization name">
+            <Input required value={organizationName} onChange={(e) => setOrganizationName(e.target.value)} />
+          </Field>
         )}
 
         {error && (
-          <div className="text-sm text-red-600">
-            <p>{error}</p>
-            {fieldErrors.length > 0 && (
-              <ul className="mt-1 list-inside list-disc">
-                {fieldErrors.map((fe, i) => (
-                  <li key={i}>
-                    {fe.field ? `${fe.field}: ` : ''}
-                    {fe.message}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <ErrorAlert
+            message={
+              fieldErrors.length > 0
+                ? `${error}: ${fieldErrors.map((fe) => (fe.field ? `${fe.field} — ${fe.message}` : fe.message)).join('; ')}`
+                : error
+            }
+          />
         )}
 
-        <button
-          type="submit"
-          disabled={submitting}
-          className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
-        >
+        <Button type="submit" disabled={submitting || passwordMismatch}>
           {submitting ? 'Creating account…' : 'Create account'}
-        </button>
+        </Button>
       </form>
     </main>
   );

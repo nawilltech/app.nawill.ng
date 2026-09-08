@@ -25,7 +25,13 @@ describe('Auth & RBAC (e2e)', () => {
   it('signs up a client, hashes the password with argon2, and returns tokens', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/signup')
-      .send({ name: 'Ada Lovelace', email: 'ada@example.com', password: 'Correct-Horse9!', clientType: 'individual' })
+      .send({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        password: 'Correct-Horse9!',
+        confirmPassword: 'Correct-Horse9!',
+        clientType: 'individual',
+      })
       .expect(201);
 
     expect(res.body.success).toBe(true);
@@ -41,7 +47,13 @@ describe('Auth & RBAC (e2e)', () => {
   it('rejects login with the wrong password', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/auth/signup')
-      .send({ name: 'Bob', email: 'bob@example.com', password: 'Correct-Horse9!', clientType: 'individual' })
+      .send({
+        name: 'Bob',
+        email: 'bob@example.com',
+        password: 'Correct-Horse9!',
+        confirmPassword: 'Correct-Horse9!',
+        clientType: 'individual',
+      })
       .expect(201);
 
     const res = await request(app.getHttpServer())

@@ -16,16 +16,32 @@ export class SupportService {
     return this.prisma.ticketType.findMany({ where: { deletedAt: null }, orderBy: { name: 'asc' } });
   }
 
+  /** Ticket creation always carries its opening message — there is no separate "empty ticket" state. */
   async create(dto: CreateTicketDto, raisedBy: string) {
     const ticketNo = `TCK-${new Date().getFullYear()}-${randomUUID().slice(0, 8).toUpperCase()}`;
-    return this.prisma.supportTicket.create({
-      data: {
-        ticketNo,
-        ticketTypeId: dto.ticketTypeId,
-        raisedBy,
-        subject: dto.subject,
-        priority: dto.priority ?? 'medium',
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const ticket = await tx.supportTicket.create({
+        data: {
+          ticketNo,
+          ticketTypeId: dto.ticketTypeId,
+          raisedBy,
+          subject: dto.subject,
+          priority: dto.priority ?? 'medium',
+        },
+      });
+
+      await tx.ticketMessage.create({
+        data: {
+          ticketId: ticket.id,
+          senderId: raisedBy,
+          body: dto.message,
+        },
+      });
+
+      return tx.supportTicket.findFirstOrThrow({
+        where: { id: ticket.id },
+        include: { messages: { orderBy: { createdAt: 'asc' } } },
+      });
     });
   }
 
@@ -61,6 +77,17 @@ export class SupportService {
         priority: dto.priority,
         resolvedAt: dto.ticketStatus === 'resolved' || dto.ticketStatus === 'closed' ? new Date() : undefined,
       },
+    });
+  }
+
+  /** Self-service: the ticket's own raiser (or staff/admin) can close it directly, without the staff-only PATCH. */
+  async close(id: string, requester: AuthUser) {
+    const ticket = await this.getTicketOrThrow(id);
+    assertSelfOrStaff(requester, ticket.raisedBy, 'You do not have access to this support ticket');
+
+    return this.prisma.supportTicket.update({
+      where: { id },
+      data: { ticketStatus: 'closed', resolvedAt: new Date() },
     });
   }
 

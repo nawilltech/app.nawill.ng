@@ -9,14 +9,11 @@ on:
 
 jobs:
   deploy:
+    # `environment: prod` on this caller job is what actually scopes secret access to
+    # the "prod" GitHub Environment — `secrets: inherit` only forwards secrets already
+    # visible to this job, so a dev-triggered run can never see prod's (or vice versa).
+    environment: prod
     uses: ./.github/workflows/_deploy.yml
     with:
-      environment_name: prod
       branch: main
-    secrets:
-      SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
-      SSH_USER: ${{ secrets.PROD_SSH_USER }}
-      SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
-      APP_PATH: ${{ secrets.PROD_APP_PATH }}
-      API_ENV_FILE: ${{ secrets.PROD_API_ENV_FILE }}
-      WEB_ENV_FILE: ${{ secrets.PROD_WEB_ENV_FILE }}
+    secrets: inherit

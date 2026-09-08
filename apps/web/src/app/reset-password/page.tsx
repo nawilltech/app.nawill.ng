@@ -39,7 +39,7 @@ function ResetPasswordForm() {
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <Field label="Reset token" hint="From the email — in this build, logged via the dev mailbox (see docs/ARCHITECTURE.md §7.7).">
+      <Field label="Reset token" hint="Paste the token from the password reset email.">
         <Input required value={token} onChange={(e) => setToken(e.target.value)} />
       </Field>
       <Field label="New password" hint="At least 8 characters, with uppercase, lowercase, a number, and a special character.">

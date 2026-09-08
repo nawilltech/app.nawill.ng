@@ -16,6 +16,8 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { BankAccountsModule } from './modules/bank-accounts/bank-accounts.module';
 import { CountriesModule } from './modules/countries/countries.module';
 import { HealthModule } from './modules/health/health.module';
+import { RbacModule } from './modules/rbac/rbac.module';
+import { KnowledgeBaseModule } from './modules/knowledge-base/knowledge-base.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './modules/rbac/roles.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
@@ -54,6 +56,8 @@ import { AppExceptionFilter } from './common/filters/http-exception.filter';
     BankAccountsModule,
     CountriesModule,
     HealthModule,
+    RbacModule,
+    KnowledgeBaseModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

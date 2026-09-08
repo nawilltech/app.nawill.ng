@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { SupportService } from './support.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
@@ -44,6 +44,13 @@ export class SupportController {
   async update(@Param('id') id: string, @Body() dto: UpdateTicketDto) {
     const result = await this.supportService.update(id, dto);
     return ok(result, 'Support ticket updated successfully');
+  }
+
+  @Post('support-tickets/:id/close')
+  @HttpCode(HttpStatus.OK)
+  async close(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    const result = await this.supportService.close(id, user);
+    return ok(result, 'Support ticket closed successfully');
   }
 
   @Post('support-tickets/:id/messages')

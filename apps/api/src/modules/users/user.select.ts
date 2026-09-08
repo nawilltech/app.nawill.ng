@@ -1,6 +1,7 @@
 /** The `users` fields safe to return from any endpoint — never passwordHash or twoFactorSecret. */
 export const SAFE_USER_SELECT = {
   id: true,
+  status: true,
   name: true,
   email: true,
   userType: true,

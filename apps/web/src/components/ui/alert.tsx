@@ -7,5 +7,5 @@ export function SuccessAlert({ message }: { message: string }) {
 }
 
 export function InfoAlert({ message }: { message: string }) {
-  return <p className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-700">{message}</p>;
+  return <p className="rounded-md bg-brand-50 px-4 py-3 text-sm text-brand">{message}</p>;
 }

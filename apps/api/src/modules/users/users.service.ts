@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { SubmitKycDocumentDto } from './dto/submit-kyc-document.dto';
 import { ReviewKycDocumentDto } from './dto/review-kyc-document.dto';
@@ -36,6 +37,35 @@ export class UsersService {
       where: { deletedAt: null },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: SAFE_USER_SELECT,
+      ...cursorArgs(dto),
+    });
+    return sliceCursorPage(rows, dto.limit);
+  }
+
+  async getUser(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: SAFE_USER_SELECT,
+    });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async updateUser(userId: string, dto: UpdateUserDto) {
+    const user = await this.prisma.user.findFirst({ where: { id: userId, deletedAt: null } });
+    if (!user) throw new NotFoundException('User not found');
+
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { userType: dto.userType, status: dto.status },
+      select: SAFE_USER_SELECT,
+    });
+  }
+
+  async listOrganizations(dto: CursorPaginationDto) {
+    const rows = await this.prisma.organization.findMany({
+      where: { deletedAt: null },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       ...cursorArgs(dto),
     });
     return sliceCursorPage(rows, dto.limit);

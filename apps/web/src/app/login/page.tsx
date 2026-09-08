@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import Link from 'next/link';
 import { Field, Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -72,7 +73,10 @@ export default function LoginPage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 px-6">
       <div>
-        <h1 className="text-2xl font-semibold">Log in</h1>
+        <Link href="/" className="mb-6 inline-block">
+          <Image src="/logo.png" alt="Nawill" width={120} height={30} className="h-8 w-auto" />
+        </Link>
+        <h1 className="font-heading text-2xl font-semibold text-neutral-900">Log in</h1>
         <p className="mt-1 text-sm text-neutral-600">
           No account?{' '}
           <Link href="/signup" className="text-brand hover:underline">
